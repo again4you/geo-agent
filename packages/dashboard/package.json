@@ -5,6 +5,12 @@
   "type": "module",
   "main": "dist/server.js",
   "types": "dist/server.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/server.js",
+      "types": "./dist/server.d.ts"
+    }
+  },
   "scripts": {
     "build": "tsc -b",
     "dev": "node --import tsx src/server.ts",

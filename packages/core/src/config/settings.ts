@@ -29,7 +29,7 @@ const CONFIG_FILE = "config.json";
  */
 export function loadSettings(workspaceDir?: string): AppSettings {
 	const baseDir =
-		workspaceDir ?? path.join(os.homedir(), ".geo-agent");
+		workspaceDir ?? process.env.GEO_WORKSPACE ?? path.join(os.homedir(), ".geo-agent");
 	const configPath = path.join(baseDir, CONFIG_FILE);
 
 	let raw: Record<string, unknown> = {};

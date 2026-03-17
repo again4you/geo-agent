@@ -16,6 +16,7 @@ export const targets = sqliteTable("targets", {
 	deployment_config: text("deployment_config", { mode: "json" }),
 	notifications: text("notifications", { mode: "json" }),
 	monitoring_interval: text("monitoring_interval").notNull().default("daily"),
+	status: text("status").notNull().default("active"),
 	created_at: text("created_at").notNull(),
 	updated_at: text("updated_at").notNull(),
 });

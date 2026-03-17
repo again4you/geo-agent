@@ -4,6 +4,13 @@ import type { GeoDatabase } from "../connection.js";
 import { targets } from "../schema.js";
 import type { TargetProfile, CreateTarget, UpdateTarget } from "../../models/target-profile.js";
 
+const DEFAULT_NOTIFICATIONS = {
+	on_score_drop: true,
+	on_external_change: true,
+	on_optimization_complete: true,
+	channels: ["dashboard"] as const,
+};
+
 export class TargetRepository {
 	constructor(private db: GeoDatabase) {}
 
@@ -27,20 +34,17 @@ export class TargetRepository {
 			url: input.url,
 			name: input.name,
 			description: input.description ?? "",
-			topics: JSON.stringify(input.topics ?? []),
-			target_queries: JSON.stringify(input.target_queries ?? []),
+			topics: input.topics ?? [],
+			target_queries: input.target_queries ?? [],
 			audience: input.audience ?? "",
-			competitors: JSON.stringify(input.competitors ?? []),
+			competitors: input.competitors ?? [],
 			business_goal: input.business_goal ?? "",
-			llm_priorities: JSON.stringify(input.llm_priorities ?? []),
+			llm_priorities: input.llm_priorities ?? [],
 			deployment_mode: input.deployment_mode ?? "suggestion_only",
-			deployment_config: input.deployment_config
-				? JSON.stringify(input.deployment_config)
-				: null,
-			notifications: input.notifications
-				? JSON.stringify(input.notifications)
-				: null,
+			deployment_config: input.deployment_config ?? null,
+			notifications: input.notifications ?? DEFAULT_NOTIFICATIONS,
 			monitoring_interval: input.monitoring_interval ?? "daily",
+			status: "active",
 			created_at: now,
 			updated_at: now,
 		};
@@ -63,22 +67,22 @@ export class TargetRepository {
 		if (input.url !== undefined) updates.url = input.url;
 		if (input.name !== undefined) updates.name = input.name;
 		if (input.description !== undefined) updates.description = input.description;
-		if (input.topics !== undefined) updates.topics = JSON.stringify(input.topics);
+		if (input.topics !== undefined) updates.topics = input.topics;
 		if (input.target_queries !== undefined)
-			updates.target_queries = JSON.stringify(input.target_queries);
+			updates.target_queries = input.target_queries;
 		if (input.audience !== undefined) updates.audience = input.audience;
 		if (input.competitors !== undefined)
-			updates.competitors = JSON.stringify(input.competitors);
+			updates.competitors = input.competitors;
 		if (input.business_goal !== undefined)
 			updates.business_goal = input.business_goal;
 		if (input.llm_priorities !== undefined)
-			updates.llm_priorities = JSON.stringify(input.llm_priorities);
+			updates.llm_priorities = input.llm_priorities;
 		if (input.deployment_mode !== undefined)
 			updates.deployment_mode = input.deployment_mode;
 		if (input.deployment_config !== undefined)
-			updates.deployment_config = JSON.stringify(input.deployment_config);
+			updates.deployment_config = input.deployment_config;
 		if (input.notifications !== undefined)
-			updates.notifications = JSON.stringify(input.notifications);
+			updates.notifications = input.notifications;
 		if (input.monitoring_interval !== undefined)
 			updates.monitoring_interval = input.monitoring_interval;
 
@@ -87,9 +91,9 @@ export class TargetRepository {
 	}
 
 	async delete(id: string): Promise<boolean> {
-		const result = await this.db
-			.delete(targets)
-			.where(eq(targets.id, id));
+		const existing = await this.findById(id);
+		if (!existing) return false;
+		await this.db.delete(targets).where(eq(targets.id, id));
 		return true;
 	}
 
@@ -109,6 +113,7 @@ export class TargetRepository {
 			deployment_config: row.deployment_config as TargetProfile["deployment_config"],
 			notifications: row.notifications as TargetProfile["notifications"],
 			monitoring_interval: row.monitoring_interval as TargetProfile["monitoring_interval"],
+			status: row.status as TargetProfile["status"],
 			created_at: row.created_at,
 			updated_at: row.updated_at,
 		};

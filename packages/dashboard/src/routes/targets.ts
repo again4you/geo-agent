@@ -1,19 +1,29 @@
 import { Hono } from "hono";
 import {
-	loadSettings,
-	createDatabase,
 	CreateTargetSchema,
 	UpdateTargetSchema,
+	TargetRepository,
+	type GeoDatabase,
 } from "@geo-agent/core";
-import { TargetRepository } from "@geo-agent/core";
+
+let sharedRepo: TargetRepository | null = null;
+
+/**
+ * Injects a shared database connection for all target routes.
+ * Must be called once at startup before handling requests.
+ */
+export function initTargetsRouter(db: GeoDatabase): void {
+	sharedRepo = new TargetRepository(db);
+}
+
+function getRepo(): TargetRepository {
+	if (!sharedRepo) {
+		throw new Error("Targets router not initialized. Call initTargetsRouter(db) at startup.");
+	}
+	return sharedRepo;
+}
 
 const targetsRouter = new Hono();
-
-function getRepo() {
-	const settings = loadSettings();
-	const db = createDatabase(settings);
-	return new TargetRepository(db);
-}
 
 // GET /api/targets — List all targets
 targetsRouter.get("/", async (c) => {
@@ -62,7 +72,10 @@ targetsRouter.put("/:id", async (c) => {
 // DELETE /api/targets/:id — Delete a target
 targetsRouter.delete("/:id", async (c) => {
 	const repo = getRepo();
-	await repo.delete(c.req.param("id"));
+	const deleted = await repo.delete(c.req.param("id"));
+	if (!deleted) {
+		return c.json({ error: "Target not found" }, 404);
+	}
 	return c.json({ deleted: true });
 });
 
