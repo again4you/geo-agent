@@ -1,0 +1,26 @@
+# Run directory - 실행 테스트 환경 (설치/실행 결과물이 git에 영향을 주지 않도록 격리)
+run/
+
+# Node.js
+node_modules/
+dist/
+.tsbuildinfo
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Workspace runtime data
+workspace/data/
+workspace/skills/
