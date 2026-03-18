@@ -23,6 +23,31 @@ npm install
 npm run build
 ```
 
+### Windows PowerShell 권한 문제
+
+Windows에서 `npm` 또는 `npx` 실행 시 다음과 같은 에러가 발생할 수 있습니다:
+
+```
+이 시스템에서 스크립트를 실행할 수 없으므로 ... 파일을 로드할 수 없습니다.
+```
+
+이는 PowerShell의 실행 정책(Execution Policy) 때문입니다. 다음 중 하나로 해결하세요:
+
+**방법 1: 현재 세션에서만 허용 (권장)**
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+**방법 2: 현재 사용자에게 영구 허용**
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+
+**방법 3: PowerShell 대신 Git Bash 또는 cmd 사용**
+```
+# Git 설치 시 함께 설치된 Git Bash를 사용하면 이 문제가 없습니다.
+```
+
 ## 사용 방법
 
 ### 1. 빠른 분석 (CLI)
