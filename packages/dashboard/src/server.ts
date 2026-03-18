@@ -12,7 +12,7 @@ import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { trimTrailingSlash } from "hono/trailing-slash";
-import { pipelineRouter } from "./routes/pipeline.js";
+import { initPipelineRouter, pipelineRouter } from "./routes/pipeline.js";
 import { settingsRouter } from "./routes/settings.js";
 import { initTargetsRouter, targetsRouter } from "./routes/targets.js";
 
@@ -122,6 +122,7 @@ export async function startServer(port?: number): Promise<{ settings: AppSetting
 	const db = createDatabase(settings);
 	await ensureTables(db);
 	initTargetsRouter(db);
+	initPipelineRouter(db);
 
 	const serverPort = port ?? settings.port;
 

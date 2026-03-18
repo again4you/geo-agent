@@ -77,6 +77,21 @@ beforeEach(async () => {
 });
 
 // ══════════════════════════════════════════════════════════════
+// Regression: Pipeline router initialization
+// ══════════════════════════════════════════════════════════════
+
+describe("Pipeline router initialization", () => {
+	it("does not return 503 'Server not ready' when pipeline endpoint is called", async () => {
+		const targetId = await getTargetId();
+		const res = await createPipeline(targetId);
+		// Must NOT be 503 — that would mean initPipelineRouter(db) was not called
+		expect(res.status).not.toBe(503);
+		const body = await res.json();
+		expect(body.error).not.toBe("Server not ready");
+	});
+});
+
+// ══════════════════════════════════════════════════════════════
 // POST /api/targets/:id/pipeline — create pipeline
 // ══════════════════════════════════════════════════════════════
 
