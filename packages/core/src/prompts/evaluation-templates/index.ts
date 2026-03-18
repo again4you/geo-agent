@@ -259,3 +259,6 @@ export function getTemplate(siteType: SiteType): EvaluationTemplate {
 	}
 	return template;
 }
+
+// ── Re-export Visualization Spec System ─────────────────────
+export * from "./viz-specs/index.js";

@@ -335,9 +335,11 @@ document.querySelectorAll('.nav button').forEach(btn => {
 function toast(msg, type = 'success') {
 	const el = document.createElement('div');
 	el.className = 'toast toast-' + type;
+	el.style.whiteSpace = 'pre-line';
 	el.textContent = msg;
 	document.body.appendChild(el);
-	setTimeout(() => el.remove(), 3000);
+	const duration = type === 'error' ? 6000 : 3000;
+	setTimeout(() => el.remove(), duration);
 }
 
 // ── API helpers ──────────────────────────────────────
@@ -349,7 +351,10 @@ async function api(path, opts = {}) {
 	});
 	if (!res.ok) {
 		const err = await res.json().catch(() => ({ error: res.statusText }));
-		throw new Error(err.error || 'Request failed');
+		let msg = err.error || 'Request failed';
+		if (err.message) msg += ': ' + err.message;
+		if (err.hint) msg += '\n' + err.hint;
+		throw new Error(msg);
 	}
 	return res.json();
 }

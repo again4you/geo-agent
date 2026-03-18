@@ -1,14 +1,20 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type AppSettings, initWorkspace, loadSettings } from "@geo-agent/core";
+import {
+	type AppSettings,
+	createDatabase,
+	ensureTables,
+	initWorkspace,
+	loadSettings,
+} from "@geo-agent/core";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { trimTrailingSlash } from "hono/trailing-slash";
 import { pipelineRouter } from "./routes/pipeline.js";
 import { settingsRouter } from "./routes/settings.js";
-import { targetsRouter } from "./routes/targets.js";
+import { initTargetsRouter, targetsRouter } from "./routes/targets.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -19,12 +25,33 @@ const app = new Hono();
 app.use("*", cors());
 app.use(trimTrailingSlash());
 
-// Error handler (Bug #4: malformed JSON → 400)
+// Error handler (Bug #4: malformed JSON → 400, DB schema mismatch → 503)
 app.onError((err, c) => {
 	if (err instanceof SyntaxError && err.message.includes("JSON")) {
 		return c.json({ error: "Invalid JSON in request body" }, 400);
 	}
-	return c.json({ error: "Internal server error" }, 500);
+
+	// DB schema mismatch (e.g. "table X has no column named Y")
+	const msg = err.message || "";
+	if (msg.includes("has no column named") || msg.includes("no such column")) {
+		const hint =
+			"Database schema is outdated. Delete the DB file and restart the server to recreate it.";
+		console.error(`❌ DB schema mismatch: ${msg}`);
+		console.error(`   ${hint}`);
+		return c.json({ error: "Database schema mismatch", message: msg, hint }, 503);
+	}
+
+	// Router not initialized
+	if (msg.includes("router not initialized")) {
+		console.error(`❌ ${msg}`);
+		return c.json(
+			{ error: "Server not ready", message: "Database connection not initialized." },
+			503,
+		);
+	}
+
+	console.error("Unhandled error:", err);
+	return c.json({ error: "Internal server error", message: msg }, 500);
 });
 
 // Health check
@@ -90,6 +117,11 @@ export { app };
 export async function startServer(port?: number): Promise<{ settings: AppSettings }> {
 	const settings = loadSettings();
 	initWorkspace(settings);
+
+	// Initialize database and inject into routers
+	const db = createDatabase(settings);
+	await ensureTables(db);
+	initTargetsRouter(db);
 
 	const serverPort = port ?? settings.port;
 
