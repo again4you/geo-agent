@@ -538,7 +538,7 @@ function renderPrompts() {
 			</div>
 			<button class="btn btn-ghost btn-sm" onclick="editPrompt('${p.agent_id}')">Edit</button>
 		</div>
-		<div style="margin-top:8px;font-size:12px;color:var(--text-muted);white-space:pre-wrap;max-height:60px;overflow:hidden;">${esc((p.system_prompt||'').slice(0,200))}...</div>
+		<div style="margin-top:8px;font-size:12px;color:var(--text-muted);white-space:pre-wrap;max-height:60px;overflow:hidden;">${esc((p.system_instruction||'').slice(0,200))}...</div>
 	</div>`).join('');
 }
 
@@ -547,7 +547,7 @@ function editPrompt(agentId) {
 	if (!p) return;
 	document.getElementById('promptModalTitle').textContent = 'Edit: ' + agentId;
 	document.getElementById('promptEditId').value = agentId;
-	document.getElementById('promptText').value = p.system_prompt || '';
+	document.getElementById('promptText').value = p.system_instruction || '';
 	document.getElementById('promptModal').classList.remove('hidden');
 }
 
@@ -556,7 +556,7 @@ async function savePrompt() {
 	try {
 		await api('/api/settings/agents/prompts/' + agentId, {
 			method: 'PUT',
-			body: { system_prompt: document.getElementById('promptText').value },
+			body: { system_instruction: document.getElementById('promptText').value },
 		});
 		toast('Prompt saved');
 		closeModal('promptModal');
