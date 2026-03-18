@@ -389,4 +389,117 @@ describe("renderSimpleDiff", () => {
 		// First line: "" vs "added line" -> changed
 		expect(diff).toContain("+ added line");
 	});
+
+	it("handles CRLF line endings", () => {
+		const diff = renderSimpleDiff("line1\r\nline2", "line1\r\nchanged");
+		expect(diff).toContain("- line2");
+		expect(diff).toContain("+ changed");
+	});
+
+	it("handles whitespace-only differences", () => {
+		const diff = renderSimpleDiff("hello ", "hello");
+		expect(diff).toContain("- hello ");
+		expect(diff).toContain("+ hello");
+	});
+
+	it("handles very long content", () => {
+		const longOriginal = Array.from({ length: 1000 }, (_, i) => `line ${i}`).join("\n");
+		const longModified = Array.from({ length: 1000 }, (_, i) => `line ${i + 1}`).join("\n");
+		const diff = renderSimpleDiff(longOriginal, longModified);
+		expect(diff.length).toBeGreaterThan(0);
+	});
+});
+
+// ─── ReportBuilder Edge Cases ────────────────────────────────────
+
+describe("ReportBuilder edge cases", () => {
+	it("setSiteType can be overwritten", () => {
+		const builder = new ReportBuilder("r1", "t1", "https://x.com");
+		const report = builder
+			.setSiteType("manufacturer")
+			.setSiteType("research")
+			.setCycleCount(1)
+			.setOverallScores(50, 60)
+			.setGrades("C", "B")
+			.build();
+		expect(report.site_type).toBe("research");
+	});
+
+	it("setCycleCount with 0 is valid", () => {
+		const builder = new ReportBuilder("r1", "t1", "https://x.com");
+		const report = builder
+			.setSiteType("generic")
+			.setCycleCount(0)
+			.setOverallScores(50, 50)
+			.setGrades("C", "C")
+			.build();
+		expect(report.cycle_count).toBe(0);
+	});
+
+	it("setOverallScores with negative delta", () => {
+		const builder = new ReportBuilder("r1", "t1", "https://x.com");
+		const report = builder
+			.setSiteType("generic")
+			.setCycleCount(1)
+			.setOverallScores(80, 60)
+			.setGrades("B", "C")
+			.build();
+		expect(report.overall_delta).toBe(-20);
+	});
+
+	it("setOverallScores with identical values", () => {
+		const builder = new ReportBuilder("r1", "t1", "https://x.com");
+		const report = builder
+			.setSiteType("generic")
+			.setCycleCount(1)
+			.setOverallScores(50, 50)
+			.setGrades("C", "C")
+			.build();
+		expect(report.overall_delta).toBe(0);
+	});
+
+	it("addScoreComparison with negative before returns delta_pct=0", () => {
+		const builder = new ReportBuilder("r1", "t1", "https://x.com");
+		builder
+			.setSiteType("generic")
+			.setCycleCount(1)
+			.setOverallScores(0, 10)
+			.setGrades("F", "D")
+			.addScoreComparison("test", -5, 10);
+		const report = builder.build();
+		expect(report.score_comparisons[0].delta).toBe(15);
+		// before <= 0 → delta_pct = 0 (division by zero/negative protection)
+		expect(report.score_comparisons[0].delta_pct).toBe(0);
+	});
+
+	it("build with empty arrays passes schema validation", () => {
+		const builder = new ReportBuilder("r1", "t1", "https://x.com");
+		const report = builder
+			.setSiteType("generic")
+			.setCycleCount(1)
+			.setOverallScores(40, 60)
+			.setGrades("C", "B")
+			.build();
+		expect(report.changes).toEqual([]);
+		expect(report.score_comparisons).toEqual([]);
+		expect(report.key_improvements).toEqual([]);
+		expect(report.remaining_issues).toEqual([]);
+	});
+
+	it("multiple addKeyImprovement and addRemainingIssue calls", () => {
+		const builder = new ReportBuilder("r1", "t1", "https://x.com");
+		const report = builder
+			.setSiteType("generic")
+			.setCycleCount(1)
+			.setOverallScores(40, 60)
+			.setGrades("C", "B")
+			.addKeyImprovement("imp1")
+			.addKeyImprovement("imp2")
+			.addKeyImprovement("imp3")
+			.addRemainingIssue("iss1")
+			.addRemainingIssue("iss2")
+			.build();
+		expect(report.key_improvements).toHaveLength(3);
+		expect(report.remaining_issues).toHaveLength(2);
+	});
 });

@@ -343,15 +343,23 @@ INIT → ANALYZING → CLONING → STRATEGIZING → OPTIMIZING → VALIDATING �
   - Zod 스키마: OAuthProvider, OAuthCredentials, OAuthToken, OAuthState
 - 테스트: oauth-manager.test.ts — 29 tests
 
-#### 테스트 (vitest) — 878 tests, 22 files ✅ (Phase 4 최종)
+#### 테스트 (vitest) — 1078 tests, 27 files ✅ (Phase 4 + 테스트 보강)
 - Phase 3까지: 744 tests, 16 files
-- 신규 6파일:
+- Phase 4 신규 6파일:
   - packages/dashboard/src/routes/dashboard-ui.test.ts — 13 tests
   - packages/core/src/llm/geo-llm-client.test.ts — 25 tests
   - packages/core/src/pipeline/orchestrator.test.ts — 21 tests
   - packages/skills/src/dual-crawl.test.ts — 25 tests
   - packages/skills/src/geo-scorer.test.ts — 21 tests
   - packages/core/src/llm/oauth-manager.test.ts — 29 tests
+- 테스트 보강 5파일 (미테스트 소스 커버리지 확보):
+  - packages/core/src/db/repositories/pipeline-repository.test.ts — 45 tests (신규)
+  - packages/core/src/report/archive-builder.test.ts — 35+ tests (신규)
+  - packages/core/src/report/dashboard-html-generator.test.ts — 25+ tests (신규)
+  - packages/core/src/prompts/template-engine.test.ts — 35+ tests (신규)
+  - packages/dashboard/src/routes/pipeline.test.ts — 30 tests (신규)
+- 기존 테스트 에지케이스 보강:
+  - report-generator.test.ts — CRLF, 공백차이, 대용량, 음수 before, 동일값, 빈 배열 등 10+ tests 추가
 
 ---
 
