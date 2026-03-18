@@ -75,7 +75,7 @@ INIT → ANALYZING → CLONING → STRATEGIZING → OPTIMIZING → VALIDATING �
 - info-recognition.ts — InfoCategory, AccuracyLevel, InfoRecognitionPerLLM/Item/Score
 - llm-probe.ts — QueryType, LLMProbe
 - geo-score.ts — GeoScorePerLLM, GeoScore, GEO_SCORE_WEIGHTS
-- target-profile.ts — CompetitorEntry, LLMPriority, DeploymentConfig, TargetProfile, Create/Update
+- target-profile.ts — CompetitorEntry, LLMPriority, TargetProfile (clone_base_path, site_type), Create/Update
 - content-snapshot.ts — ContentSnapshot
 - change-record.ts — ChangeRecord
 - change-impact.ts — Verdict, ChangeImpact
@@ -115,10 +115,10 @@ INIT → ANALYZING → CLONING → STRATEGIZING → OPTIMIZING → VALIDATING �
 ### Phase 1.5: 빌드 수정, 버그 수정, 테스트 ✅
 
 #### 빌드 수정 사항
-- better-sqlite3 `^12.8.0` 업그레이드 (Node 24 prebuilt 지원)
-- drizzle-orm `^0.45.1`, drizzle-kit `^0.31.10` 업그레이드
-- pino-pretty 런타임 의존성 추가
+- drizzle-orm `^0.35.0`, drizzle-kit `^0.25.0`
+- pino-pretty devDependencies (graceful fallback — 없으면 plain JSON 로그)
 - core/dashboard package.json exports 필드 추가
+- better-sqlite3 완전 제거 (Phase 3.5에서 @libsql/client in-memory로 전환)
 
 #### 발견 & 수정된 버그 9건
 
