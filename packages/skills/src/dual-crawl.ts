@@ -173,6 +173,152 @@ export async function crawlTarget(url: string, timeoutMs = 10000): Promise<Crawl
 	};
 }
 
+// ── Multi-page crawling ─────────────────────────────────────
+
+export interface MultiPageCrawlResult {
+	homepage: CrawlData;
+	pages: Array<{ url: string; path: string; crawl_data: CrawlData }>;
+	total_pages: number;
+	crawl_duration_ms: number;
+}
+
+/** Asset/non-content file extensions to skip */
+const SKIP_EXTENSIONS = /\.(css|js|png|jpg|jpeg|gif|svg|ico|pdf|zip|woff2?|ttf|eot|mp4|mp3|webp|avif)(\?|$)/i;
+
+/** URL patterns indicating product/category pages (prioritized in crawl order) */
+const PRODUCT_PATTERNS = [
+	/\/(products?|smartphones?|phones?|tablets?|laptops?|tvs?|televisions?)\//i,
+	/\/(category|categories|catalog|shop|store|buy)\//i,
+	/\/(home-appliances?|refrigerators?|washers?|computers?|monitors?)\//i,
+	/\/(vehicles?|cars?|suv|models?|solutions?|services?)\//i,
+	/\/(features?|specifications?|compare|specs)\//i,
+];
+
+/**
+ * Convert a page URL to a safe filename for clone storage.
+ */
+export function urlToFilename(pageUrl: string, baseUrl: string): string {
+	try {
+		const parsed = new URL(pageUrl, baseUrl);
+		let p = parsed.pathname.replace(/^\/+|\/+$/g, "");
+		if (!p) return "index.html";
+		// Replace path separators with hyphens, remove unsafe chars
+		p = p.replace(/\//g, "-").replace(/[^a-zA-Z0-9_\-\.]/g, "_");
+		if (!p.endsWith(".html")) p += ".html";
+		return p;
+	} catch {
+		return `page-${Date.now()}.html`;
+	}
+}
+
+/**
+ * Crawl the homepage, discover internal links, and crawl up to maxPages total.
+ * Link discovery: extract <a href> from homepage HTML, filter to same host,
+ * prioritize product/category URLs, crawl in parallel (5 concurrent).
+ */
+export async function crawlMultiplePages(
+	url: string,
+	maxPages = 20,
+	timeoutMs = 10000,
+): Promise<MultiPageCrawlResult> {
+	const startTime = Date.now();
+
+	// 1. Crawl homepage (full crawl with robots/llms/sitemap)
+	const homepage = await crawlTarget(url, timeoutMs);
+	const baseUrl = getBaseUrl(url);
+
+	if (maxPages <= 1) {
+		return {
+			homepage,
+			pages: [],
+			total_pages: 1,
+			crawl_duration_ms: Date.now() - startTime,
+		};
+	}
+
+	// 2. Discover internal links from homepage
+	const seen = new Set<string>([new URL(url).pathname]);
+	const prioritized: string[] = [];
+	const secondary: string[] = [];
+
+	for (const link of homepage.links) {
+		try {
+			const resolved = new URL(link.href, url);
+			// Same host only
+			if (resolved.host !== new URL(url).host) continue;
+			// Skip assets
+			if (SKIP_EXTENSIONS.test(resolved.pathname)) continue;
+			// Skip anchors and query-only
+			const path = resolved.pathname;
+			if (seen.has(path)) continue;
+			seen.add(path);
+
+			const fullUrl = resolved.href.split("#")[0]; // strip fragment
+			if (PRODUCT_PATTERNS.some((p) => p.test(path))) {
+				prioritized.push(fullUrl);
+			} else {
+				secondary.push(fullUrl);
+			}
+		} catch {
+			// Invalid URL, skip
+		}
+	}
+
+	// 3. Select up to maxPages-1 URLs (prioritized first)
+	const toFetch = [...prioritized, ...secondary].slice(0, maxPages - 1);
+
+	// 4. Crawl in parallel with concurrency limit of 5
+	const pages: Array<{ url: string; path: string; crawl_data: CrawlData }> = [];
+	const concurrency = 5;
+
+	for (let i = 0; i < toFetch.length; i += concurrency) {
+		const batch = toFetch.slice(i, i + concurrency);
+		const results = await Promise.allSettled(
+			batch.map(async (pageUrl) => {
+				const res = await safeFetch(pageUrl, timeoutMs);
+				if (!res || res.status >= 400) return null;
+
+				const html = res.body;
+				const crawlData: CrawlData = {
+					html,
+					url: pageUrl,
+					status_code: res.status,
+					content_type: res.headers["content-type"] ?? "text/html",
+					response_time_ms: 0,
+					// Share bot-facing resources from homepage
+					robots_txt: homepage.robots_txt,
+					llms_txt: homepage.llms_txt,
+					sitemap_xml: homepage.sitemap_xml,
+					json_ld: extractJsonLd(html),
+					meta_tags: extractMetaTags(html),
+					title: extractTitle(html),
+					canonical_url: extractCanonical(html),
+					links: extractLinks(html),
+					headers: res.headers,
+				};
+				return {
+					url: pageUrl,
+					path: urlToFilename(pageUrl, baseUrl),
+					crawl_data: crawlData,
+				};
+			}),
+		);
+
+		for (const result of results) {
+			if (result.status === "fulfilled" && result.value) {
+				pages.push(result.value);
+			}
+		}
+	}
+
+	return {
+		homepage,
+		pages,
+		total_pages: 1 + pages.length,
+		crawl_duration_ms: Date.now() - startTime,
+	};
+}
+
 // ── Skill wrapper ───────────────────────────────────────────
 
 export const dualCrawlSkill: Skill = {

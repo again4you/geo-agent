@@ -22,3 +22,37 @@ export interface CrawlData {
 	links: Array<{ href: string; rel: string; text: string }>;
 	headers: Record<string, string>;
 }
+
+/** Multi-page crawl result (skills/dual-crawl.ts와 호환) */
+export interface MultiPageCrawlResult {
+	homepage: CrawlData;
+	pages: Array<{ url: string; path: string; crawl_data: CrawlData }>;
+	total_pages: number;
+	crawl_duration_ms: number;
+}
+
+/** 개별 페이지 GEO 채점 결과 */
+export interface PageScoreResult {
+	url: string;
+	filename: string;
+	scores: {
+		overall_score: number;
+		grade: string;
+		dimensions: Array<{
+			id: string;
+			label: string;
+			score: number;
+			weight: number;
+			details: string[];
+		}>;
+	};
+}
+
+/** 멀티 페이지 분석 집계 결과 */
+export interface MultiPageAnalysisResult {
+	homepage_scores: PageScoreResult;
+	page_scores: PageScoreResult[];
+	aggregate_score: number;
+	aggregate_grade: string;
+	per_dimension_averages: Array<{ id: string; label: string; avg_score: number }>;
+}

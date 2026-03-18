@@ -10,7 +10,12 @@
 import { v4 as uuidv4 } from "uuid";
 import type { AnalysisReport } from "../models/analysis-report.js";
 import type { GeoScore } from "../models/geo-score.js";
-import type { CrawlData } from "./types.js";
+import type {
+	CrawlData,
+	MultiPageAnalysisResult,
+	MultiPageCrawlResult,
+	PageScoreResult,
+} from "./types.js";
 
 // ── Analysis Agent Input/Output ─────────────────────────────
 
@@ -40,6 +45,10 @@ export interface AnalysisOutput {
 			details: string[];
 		}>;
 	};
+	/** 멀티페이지 분석 결과 (manufacturer 사이트 등). null이면 단일 페이지 분석. */
+	multi_page: MultiPageAnalysisResult | null;
+	/** 클론 저장용 전체 페이지 데이터. null이면 단일 페이지. */
+	all_pages: Array<{ filename: string; crawl_data: CrawlData }> | null;
 }
 
 // ── Helper: CrawlData → AnalysisReport 변환 ─────────────────
@@ -137,31 +146,89 @@ function buildGeoScore(scoreData: {
 
 // ── Analysis Agent 실행 함수 ─────────────────────────────────
 
+/** ScoreTarget return type alias for brevity */
+type ScoreTargetResult = {
+	overall_score: number;
+	grade: string;
+	dimensions: Array<{
+		id: string;
+		label: string;
+		score: number;
+		weight: number;
+		details: string[];
+	}>;
+};
+
+export interface AnalysisDeps {
+	crawlTarget: (url: string, timeout?: number) => Promise<CrawlData>;
+	scoreTarget: (data: CrawlData) => ScoreTargetResult;
+	classifySite: (
+		html: string,
+		url: string,
+	) => {
+		site_type: string;
+		confidence: number;
+		matched_signals: string[];
+		all_signals: Array<{ site_type: string; confidence: number; signals: string[] }>;
+	};
+	/** Multi-page crawl (optional — manufacturer 사이트에서 자동 사용) */
+	crawlMultiplePages?: (
+		url: string,
+		maxPages?: number,
+		timeoutMs?: number,
+	) => Promise<MultiPageCrawlResult>;
+}
+
+/**
+ * 단일 CrawlData로부터 PageScoreResult 생성
+ */
+function buildPageScore(
+	crawlData: CrawlData,
+	filename: string,
+	scoreTarget: (data: CrawlData) => ScoreTargetResult,
+): PageScoreResult {
+	const scores = scoreTarget(crawlData);
+	return { url: crawlData.url, filename, scores };
+}
+
+/**
+ * 멀티 페이지 점수 집계: 홈 2x 가중 + 나머지 1x
+ */
+function computeAggregateScores(
+	homepage: PageScoreResult,
+	pages: PageScoreResult[],
+): { aggregate_score: number; aggregate_grade: string; per_dimension_averages: MultiPageAnalysisResult["per_dimension_averages"] } {
+	const allPages = [homepage, ...pages];
+	const weights = [2, ...pages.map(() => 1)];
+	const totalWeight = weights.reduce((a, b) => a + b, 0);
+
+	const weightedSum = allPages.reduce((sum, p, i) => sum + p.scores.overall_score * weights[i], 0);
+	const aggregate_score = Math.round((weightedSum / totalWeight) * 10) / 10;
+
+	const aggregate_grade =
+		aggregate_score >= 90 ? "Excellent"
+			: aggregate_score >= 75 ? "Good"
+				: aggregate_score >= 55 ? "Needs Improvement"
+					: aggregate_score >= 35 ? "Poor"
+						: "Critical";
+
+	// Per-dimension averages (weighted)
+	const dimIds = homepage.scores.dimensions.map((d) => d.id);
+	const per_dimension_averages = dimIds.map((dimId) => {
+		const dim = homepage.scores.dimensions.find((d) => d.id === dimId)!;
+		const sum = allPages.reduce((s, p, i) => {
+			const pDim = p.scores.dimensions.find((d) => d.id === dimId);
+			return s + (pDim?.score ?? 0) * weights[i];
+		}, 0);
+		return { id: dimId, label: dim.label, avg_score: Math.round((sum / totalWeight) * 10) / 10 };
+	});
+
+	return { aggregate_score, aggregate_grade, per_dimension_averages };
+}
+
 export async function runAnalysis(
 	input: AnalysisInput,
-	deps: {
-		crawlTarget: (url: string, timeout?: number) => Promise<CrawlData>;
-		scoreTarget: (data: CrawlData) => {
-			overall_score: number;
-			grade: string;
-			dimensions: Array<{
-				id: string;
-				label: string;
-				score: number;
-				weight: number;
-				details: string[];
-			}>;
-		};
-		classifySite: (
-			html: string,
-			url: string,
-		) => {
-			site_type: string;
-			confidence: number;
-			matched_signals: string[];
-			all_signals: Array<{ site_type: string; confidence: number; signals: string[] }>;
-		};
-	},
+	deps: AnalysisDeps,
 ): Promise<AnalysisOutput> {
 	// 1. Crawl
 	const crawlData = await deps.crawlTarget(input.target_url, input.crawl_timeout ?? 15000);
@@ -169,12 +236,41 @@ export async function runAnalysis(
 	// 2. Classify
 	const classification = deps.classifySite(crawlData.html, crawlData.url);
 
-	// 3. Score (static)
+	// 3. Score homepage (static)
 	const geoScores = deps.scoreTarget(crawlData);
 
-	// 4. Build AnalysisReport
+	// 4. Multi-page analysis (manufacturer 사이트 + crawlMultiplePages 제공 시)
+	let multiPage: MultiPageAnalysisResult | null = null;
+	let allPages: Array<{ filename: string; crawl_data: CrawlData }> | null = null;
+
+	if (classification.site_type === "manufacturer" && deps.crawlMultiplePages) {
+		const mpResult = await deps.crawlMultiplePages(input.target_url, 20, input.crawl_timeout ?? 15000);
+
+		const homepageScore = buildPageScore(mpResult.homepage, "index.html", deps.scoreTarget);
+		const pageScores: PageScoreResult[] = mpResult.pages.map((p) =>
+			buildPageScore(p.crawl_data, p.path, deps.scoreTarget),
+		);
+
+		const agg = computeAggregateScores(homepageScore, pageScores);
+
+		multiPage = {
+			homepage_scores: homepageScore,
+			page_scores: pageScores,
+			...agg,
+		};
+
+		allPages = mpResult.pages.map((p) => ({
+			filename: p.path,
+			crawl_data: p.crawl_data,
+		}));
+	}
+
+	// 5. Build AnalysisReport
 	const structureQuality = computeStructureQuality(crawlData.html);
 	const contentAnalysis = computeContentAnalysis(crawlData.html, []);
+
+	const effectiveScore = multiPage?.aggregate_score ?? geoScores.overall_score;
+	const effectiveGrade = multiPage?.aggregate_grade ?? geoScores.grade;
 
 	const report: AnalysisReport = {
 		report_id: uuidv4(),
@@ -184,14 +280,11 @@ export async function runAnalysis(
 
 		machine_readability: {
 			grade:
-				geoScores.overall_score >= 75
-					? "A"
-					: geoScores.overall_score >= 55
-						? "B"
-						: geoScores.overall_score >= 35
-							? "C"
+				effectiveScore >= 75 ? "A"
+					: effectiveScore >= 55 ? "B"
+						: effectiveScore >= 35 ? "C"
 							: "F",
-			js_dependency_ratio: 0, // 정적 분석에서는 JS 실행하지 않으므로 0
+			js_dependency_ratio: 0,
 			structure_quality: structureQuality,
 			crawler_access: [
 				{
@@ -216,15 +309,26 @@ export async function runAnalysis(
 		},
 
 		extracted_info_items: [],
-		current_geo_score: buildGeoScore(geoScores),
+		current_geo_score: buildGeoScore({ overall_score: effectiveScore, dimensions: geoScores.dimensions }),
 		competitor_gaps: [],
 		llm_status: [],
 	};
+
+	// Multi-page인 경우 집계 점수를 geo_scores에 반영
+	const finalGeoScores = multiPage
+		? {
+				overall_score: multiPage.aggregate_score,
+				grade: multiPage.aggregate_grade,
+				dimensions: geoScores.dimensions, // 차원별은 홈페이지 기준 유지 (집계는 multi_page에)
+			}
+		: geoScores;
 
 	return {
 		report,
 		crawl_data: crawlData,
 		classification,
-		geo_scores: geoScores,
+		geo_scores: finalGeoScores,
+		multi_page: multiPage,
+		all_pages: allPages,
 	};
 }

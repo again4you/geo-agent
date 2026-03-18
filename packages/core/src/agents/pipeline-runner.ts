@@ -92,6 +92,12 @@ export interface PipelineDeps {
 		all_signals: Array<{ site_type: string; confidence: number; signals: string[] }>;
 	};
 	chatLLM?: (req: LLMRequest) => Promise<LLMResponse>;
+	/** 멀티 페이지 크롤링 (optional — 제공 시 manufacturer 사이트에서 자동 사용) */
+	crawlMultiplePages?: (
+		url: string,
+		maxPages?: number,
+		timeoutMs?: number,
+	) => Promise<import("./types.js").MultiPageCrawlResult>;
 }
 
 // ── Pipeline Runner ──────────────────────────────────────────
@@ -164,7 +170,12 @@ export async function runPipeline(
 			async () => {
 				analysisOutput = await runAnalysis(
 					{ target_id: config.target_id, target_url: config.target_url },
-					deps,
+					{
+						crawlTarget: deps.crawlTarget,
+						scoreTarget: deps.scoreTarget,
+						classifySite: deps.classifySite,
+						crawlMultiplePages: deps.crawlMultiplePages,
+					},
 				);
 				ctx.setRef("analysis", analysisOutput.report.report_id);
 				currentScore = analysisOutput.geo_scores.overall_score;
@@ -173,8 +184,12 @@ export async function runPipeline(
 				initialScore = currentScore;
 				return analysisOutput;
 			},
-			(out) =>
-				`Score: ${out.geo_scores.overall_score}/100 (${out.geo_scores.grade}), Site: ${out.classification.site_type} (confidence: ${out.classification.confidence.toFixed(2)})`,
+			(out) => {
+				const pageInfo = out.multi_page
+					? `, ${out.multi_page.page_scores.length + 1} pages crawled`
+					: "";
+				return `Score: ${out.geo_scores.overall_score}/100 (${out.geo_scores.grade}), Site: ${out.classification.site_type} (confidence: ${out.classification.confidence.toFixed(2)})${pageInfo}`;
+			},
 			(out) => ({
 				score: out.geo_scores.overall_score,
 				grade: out.geo_scores.grade,
@@ -184,26 +199,54 @@ export async function runPipeline(
 					label: d.label,
 					score: d.score,
 				})),
+				multi_page: out.multi_page
+					? {
+							aggregate_score: out.multi_page.aggregate_score,
+							aggregate_grade: out.multi_page.aggregate_grade,
+							page_count: out.multi_page.page_scores.length + 1,
+							pages: [
+								out.multi_page.homepage_scores,
+								...out.multi_page.page_scores,
+							].map((p) => ({
+								url: p.url,
+								filename: p.filename,
+								score: p.scores.overall_score,
+								grade: p.scores.grade,
+							})),
+							per_dimension_averages: out.multi_page.per_dimension_averages,
+						}
+					: null,
 			}),
 		);
 	});
 
 	// ── CLONING ──────────────────────────────────────────────
 	orchestrator.registerHandler("CLONING", async () => {
+		const pageCount = analysisOutput?.all_pages?.length ?? 0;
 		await trackStage(
 			"CLONING",
-			`Creating local clone of ${config.target_url}`,
+			`Creating local clone of ${config.target_url}${pageCount > 0 ? ` + ${pageCount} sub-pages` : ""}`,
 			async () => {
 				if (!analysisOutput) throw new Error("Analysis output missing");
 				cloneManager = new CloneManager(config.workspace_dir);
+
+				// Build additional files map from multi-page crawl
+				const additionalFiles = new Map<string, string>();
+				if (analysisOutput.all_pages) {
+					for (const page of analysisOutput.all_pages) {
+						additionalFiles.set(page.filename, page.crawl_data.html);
+					}
+				}
+
 				await cloneManager.createClone(
 					config.target_id,
 					config.target_url,
 					analysisOutput.crawl_data.html,
+					additionalFiles.size > 0 ? additionalFiles : undefined,
 				);
-				return { clone_path: config.workspace_dir };
+				return { clone_path: config.workspace_dir, files: 1 + additionalFiles.size };
 			},
-			(out) => `Clone created at ${out.clone_path}`,
+			(out) => `Clone created at ${out.clone_path} (${out.files} files)`,
 		);
 	});
 
@@ -269,11 +312,33 @@ export async function runPipeline(
 
 	// ── VALIDATING ───────────────────────────────────────────
 	orchestrator.registerHandler("VALIDATING", async (ctx: StageContext) => {
+		const isMultiPage = !!analysisOutput?.multi_page;
 		await trackStage(
 			"VALIDATING",
-			`Re-scoring optimized clone, cycle ${cycleCount}, target: ${config.target_score ?? 80}`,
+			`Re-scoring optimized clone${isMultiPage ? ` (${(analysisOutput?.all_pages?.length ?? 0) + 1} pages)` : ""}, cycle ${cycleCount}, target: ${config.target_score ?? 80}`,
 			async () => {
 				if (!cloneManager) throw new Error("Clone missing");
+
+				// Helper: read a clone file as CrawlData
+				const fileAsCrawlData = (filename: string, pageUrl: string): CrawlData => {
+					const html = cloneManager!.readWorkingFile(config.target_id, filename) ?? "";
+					return {
+						html,
+						url: pageUrl,
+						status_code: 200,
+						content_type: "text/html",
+						response_time_ms: 0,
+						robots_txt: cloneManager!.readWorkingFile(config.target_id, "robots.txt") ?? null,
+						llms_txt: cloneManager!.readWorkingFile(config.target_id, "llms.txt") ?? null,
+						sitemap_xml: null,
+						json_ld: [],
+						meta_tags: {},
+						title: "",
+						canonical_url: null,
+						links: [],
+						headers: {},
+					};
+				};
 
 				validationOutput = await runValidation(
 					{
@@ -285,38 +350,37 @@ export async function runPipeline(
 						target_score: config.target_score ?? 80,
 						cycle_number: cycleCount,
 						max_cycles: config.max_cycles ?? 10,
+						before_page_scores: analysisOutput?.multi_page
+							? [
+									analysisOutput.multi_page.homepage_scores,
+									...analysisOutput.multi_page.page_scores,
+								]
+							: undefined,
 					},
 					{
-						crawlClone: async () => {
-							const html =
-								cloneManager!.readWorkingFile(config.target_id, "index.html") ??
-								"";
-							return {
-								html,
-								url: config.target_url,
-								status_code: 200,
-								content_type: "text/html",
-								response_time_ms: 0,
-								robots_txt:
-									cloneManager!.readWorkingFile(
-										config.target_id,
-										"robots.txt",
-									) ?? null,
-								llms_txt:
-									cloneManager!.readWorkingFile(
-										config.target_id,
-										"llms.txt",
-									) ?? null,
-								sitemap_xml: null,
-								json_ld: [],
-								meta_tags: {},
-								title: "",
-								canonical_url: null,
-								links: [],
-								headers: {},
-							};
-						},
+						crawlClone: async () => fileAsCrawlData("index.html", config.target_url),
 						scoreTarget: deps.scoreTarget,
+						crawlClonePages: isMultiPage
+							? async () => {
+									const pages: Array<{ filename: string; crawl_data: CrawlData }> = [];
+									const allFiles = cloneManager!.listWorkingFiles(config.target_id);
+									for (const f of allFiles) {
+										if (f.endsWith(".html") && f !== "index.html") {
+											const pageData = analysisOutput?.all_pages?.find(
+												(p) => p.filename === f,
+											);
+											pages.push({
+												filename: f,
+												crawl_data: fileAsCrawlData(
+													f,
+													pageData?.crawl_data.url ?? config.target_url,
+												),
+											});
+										}
+									}
+									return pages;
+								}
+							: undefined,
 					},
 				);
 

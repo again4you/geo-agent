@@ -4,7 +4,7 @@
  * 최적화 후 클론 파일을 재분석하여 점수 변화를 측정.
  * Before-After 비교 결과를 생성하고, 추가 사이클 필요 여부 결정.
  */
-import type { CrawlData } from "./types.js";
+import type { CrawlData, PageScoreResult } from "./types.js";
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -27,6 +27,8 @@ export interface ValidationInput {
 	cycle_number: number;
 	/** 최대 사이클 수 */
 	max_cycles?: number;
+	/** 멀티 페이지 before 점수 (멀티 페이지 모드) */
+	before_page_scores?: PageScoreResult[];
 }
 
 export interface ValidationOutput {
@@ -51,38 +53,89 @@ export interface ValidationOutput {
 		after: number;
 		delta: number;
 	}>;
+	/** 멀티 페이지 after 점수 (멀티 페이지 모드) */
+	after_page_scores?: PageScoreResult[];
+	/** 페이지별 delta (멀티 페이지 모드) */
+	page_deltas?: Array<{ url: string; filename: string; before: number; after: number; delta: number }>;
 }
 
 // ── Validation Agent 실행 ────────────────────────────────────
 
+export interface ValidationDeps {
+	/** 클론 파일을 CrawlData로 변환 (로컬 파일 기반) */
+	crawlClone: () => Promise<CrawlData>;
+	/** GEO 점수 계산 */
+	scoreTarget: (data: CrawlData) => {
+		overall_score: number;
+		grade: string;
+		dimensions: Array<{
+			id: string;
+			label: string;
+			score: number;
+			weight: number;
+			details: string[];
+		}>;
+	};
+	/** 멀티 페이지: 클론의 모든 페이지를 CrawlData로 반환 */
+	crawlClonePages?: () => Promise<Array<{ filename: string; crawl_data: CrawlData }>>;
+}
+
 export async function runValidation(
 	input: ValidationInput,
-	deps: {
-		/** 클론 파일을 CrawlData로 변환 (로컬 파일 기반) */
-		crawlClone: () => Promise<CrawlData>;
-		/** GEO 점수 계산 */
-		scoreTarget: (data: CrawlData) => {
-			overall_score: number;
-			grade: string;
-			dimensions: Array<{
-				id: string;
-				label: string;
-				score: number;
-				weight: number;
-				details: string[];
-			}>;
-		};
-	},
+	deps: ValidationDeps,
 ): Promise<ValidationOutput> {
-	// 1. 클론 재크롤링 + 재채점
+	// 1. 클론 재크롤링 + 재채점 (홈페이지)
 	const crawlData = await deps.crawlClone();
 	const afterScores = deps.scoreTarget(crawlData);
 
-	// 2. Before-After 비교
-	const delta = afterScores.overall_score - input.before_score;
+	// 2. 멀티 페이지 재채점
+	let afterPageScores: PageScoreResult[] | undefined;
+	let pageDeltas: ValidationOutput["page_deltas"] | undefined;
+	let effectiveAfterScore = afterScores.overall_score;
+
+	if (deps.crawlClonePages && input.before_page_scores && input.before_page_scores.length > 0) {
+		const clonePages = await deps.crawlClonePages();
+		afterPageScores = clonePages.map((p) => {
+			const scores = deps.scoreTarget(p.crawl_data);
+			return { url: p.crawl_data.url, filename: p.filename, scores };
+		});
+
+		// 집계 점수: 홈 2x + 나머지 1x
+		const homeScore: PageScoreResult = {
+			url: input.target_url,
+			filename: "index.html",
+			scores: afterScores,
+		};
+		const allAfter = [homeScore, ...afterPageScores];
+		const weights = [2, ...afterPageScores.map(() => 1)];
+		const totalWeight = weights.reduce((a, b) => a + b, 0);
+		effectiveAfterScore =
+			Math.round(
+				(allAfter.reduce((s, p, i) => s + p.scores.overall_score * weights[i], 0) /
+					totalWeight) *
+					10,
+			) / 10;
+
+		// 페이지별 delta
+		pageDeltas = afterPageScores.map((after) => {
+			const before = input.before_page_scores!.find(
+				(b) => b.filename === after.filename,
+			);
+			return {
+				url: after.url,
+				filename: after.filename,
+				before: before?.scores.overall_score ?? 0,
+				after: after.scores.overall_score,
+				delta: after.scores.overall_score - (before?.scores.overall_score ?? 0),
+			};
+		});
+	}
+
+	// 3. Before-After 비교
+	const delta = effectiveAfterScore - input.before_score;
 	const improved = delta > 0;
 
-	// 3. 차원별 비교
+	// 4. 차원별 비교
 	const dimensionDeltas = afterScores.dimensions.map((after) => {
 		const before = input.before_dimensions.find((d) => d.id === after.id);
 		return {
@@ -94,16 +147,16 @@ export async function runValidation(
 		};
 	});
 
-	// 4. 추가 사이클 필요 여부 판정
+	// 5. 추가 사이클 필요 여부 판정
 	const targetScore = input.target_score ?? 80;
 	const maxCycles = input.max_cycles ?? 10;
 
 	let needsMoreCycles = true;
 	let stopReason: string | null = null;
 
-	if (afterScores.overall_score >= targetScore) {
+	if (effectiveAfterScore >= targetScore) {
 		needsMoreCycles = false;
-		stopReason = `score_sufficient: ${afterScores.overall_score} >= ${targetScore}`;
+		stopReason = `score_sufficient: ${effectiveAfterScore} >= ${targetScore}`;
 	} else if (delta < 2 && input.cycle_number > 0) {
 		needsMoreCycles = false;
 		stopReason = `no_more_improvements: delta=${delta.toFixed(1)} < 2`;
@@ -113,7 +166,7 @@ export async function runValidation(
 	}
 
 	return {
-		after_score: afterScores.overall_score,
+		after_score: effectiveAfterScore,
 		after_grade: afterScores.grade,
 		after_dimensions: afterScores.dimensions,
 		delta,
@@ -121,5 +174,7 @@ export async function runValidation(
 		needs_more_cycles: needsMoreCycles,
 		stop_reason: stopReason,
 		dimension_deltas: dimensionDeltas,
+		after_page_scores: afterPageScores,
+		page_deltas: pageDeltas,
 	};
 }

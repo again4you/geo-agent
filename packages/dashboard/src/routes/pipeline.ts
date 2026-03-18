@@ -10,7 +10,7 @@ import {
 	runPipeline,
 	classifySite,
 } from "@geo-agent/core";
-import { crawlTarget, scoreTarget } from "@geo-agent/skills";
+import { crawlMultiplePages, crawlTarget, scoreTarget } from "@geo-agent/skills";
 /**
  * Pipeline & Cycle Control Routes
  *
@@ -125,6 +125,7 @@ pipelineRouter.post("/:id/pipeline", async (c) => {
 			crawlTarget,
 			scoreTarget,
 			classifySite,
+			crawlMultiplePages,
 		};
 
 		const config: PipelineConfig = {
@@ -228,6 +229,65 @@ pipelineRouter.get("/:id/pipeline/:pipelineId/stages/:stageId", async (c) => {
 		return c.json({ error: "Stage execution not found" }, 404);
 	}
 	return c.json(stage);
+});
+
+// ── Evaluation Results Route ─────────────────────────────
+
+// GET /api/targets/:id/pipeline/:pipelineId/evaluation — 평가 결과 조회
+pipelineRouter.get("/:id/pipeline/:pipelineId/evaluation", async (c) => {
+	const stageRepo = getStageRepo();
+	const pipelineId = c.req.param("pipelineId");
+	const stages = await stageRepo.findByPipelineId(pipelineId);
+
+	// Find ANALYZING and latest VALIDATING stages
+	const analyzingStage = stages.find((s) => s.stage === "ANALYZING" && s.result_full);
+	const validatingStages = stages.filter((s) => s.stage === "VALIDATING" && s.result_full);
+	const latestValidating = validatingStages.length > 0
+		? validatingStages[validatingStages.length - 1]
+		: null;
+
+	if (!analyzingStage?.result_full) {
+		return c.json({ error: "No evaluation data available" }, 404);
+	}
+
+	let initial: Record<string, unknown>;
+	try {
+		initial = JSON.parse(analyzingStage.result_full);
+	} catch {
+		return c.json({ error: "Failed to parse evaluation data" }, 500);
+	}
+
+	let final_data: Record<string, unknown> | null = null;
+	if (latestValidating?.result_full) {
+		try {
+			final_data = JSON.parse(latestValidating.result_full);
+		} catch {
+			// ignore parse error
+		}
+	}
+
+	const initialScore = (initial.score as number) ?? 0;
+	const finalScore = final_data
+		? (final_data.after as number) ?? (final_data.delta as number ?? 0) + initialScore
+		: initialScore;
+
+	return c.json({
+		initial_score: initialScore,
+		initial_grade: initial.grade ?? "Unknown",
+		final_score: finalScore,
+		final_grade: final_data ? (initial.grade ?? "Unknown") : (initial.grade ?? "Unknown"),
+		delta: finalScore - initialScore,
+		site_type: initial.site_type ?? "unknown",
+		dimensions: initial.dimensions ?? [],
+		multi_page: initial.multi_page ?? null,
+		validation: final_data,
+		stages: stages.map((s) => ({
+			stage: s.stage,
+			status: s.status,
+			result_summary: s.result_summary,
+			duration_ms: s.duration_ms,
+		})),
+	});
 });
 
 // ── Cycle Control Routes ──────────────────────────────────

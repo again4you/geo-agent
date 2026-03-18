@@ -175,7 +175,10 @@ export function getBundledSkills(): SkillMetadata[] {
 export {
 	dualCrawlSkill,
 	crawlTarget,
+	crawlMultiplePages,
+	urlToFilename,
 	type CrawlData,
+	type MultiPageCrawlResult,
 	_parsers as dualCrawlParsers,
 } from "./dual-crawl.js";
 export { geoScorerSkill, scoreTarget, type GeoScoreData } from "./geo-scorer.js";
