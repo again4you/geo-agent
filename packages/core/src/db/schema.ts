@@ -92,6 +92,22 @@ export const pipelineRuns = sqliteTable("pipeline_runs", {
 	resume_from_stage: text("resume_from_stage"),
 });
 
+// ─── stage_executions ─────────────────────────────────────
+export const stageExecutions = sqliteTable("stage_executions", {
+	id: text("id").primaryKey(),
+	pipeline_id: text("pipeline_id").notNull(),
+	stage: text("stage").notNull(),
+	cycle: integer("cycle").notNull().default(0),
+	status: text("status").notNull().default("pending"),
+	prompt_summary: text("prompt_summary").notNull().default(""),
+	result_summary: text("result_summary").notNull().default(""),
+	result_full: text("result_full"),
+	error_message: text("error_message"),
+	started_at: text("started_at").notNull(),
+	completed_at: text("completed_at"),
+	duration_ms: integer("duration_ms"),
+});
+
 // ─── error_events ─────────────────────────────────────────
 export const errorEvents = sqliteTable("error_events", {
 	error_id: text("error_id").primaryKey(),

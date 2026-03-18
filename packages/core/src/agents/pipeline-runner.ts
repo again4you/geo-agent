@@ -22,6 +22,24 @@ import { type ValidationOutput, runValidation } from "./validation-agent.js";
 
 // ── Pipeline Config ─────────────────────────────────────────
 
+export interface StageCallbacks {
+	/** 스테이지 시작 시 호출. execution ID 반환. */
+	onStageStart?: (
+		pipelineId: string,
+		stage: string,
+		cycle: number,
+		promptSummary: string,
+	) => Promise<string>;
+	/** 스테이지 완료 시 호출. */
+	onStageComplete?: (
+		executionId: string,
+		resultSummary: string,
+		resultFull?: unknown,
+	) => Promise<void>;
+	/** 스테이지 실패 시 호출. */
+	onStageFail?: (executionId: string, error: string) => Promise<void>;
+}
+
 export interface PipelineConfig {
 	target_id: string;
 	target_url: string;
@@ -34,6 +52,8 @@ export interface PipelineConfig {
 	max_retries?: number;
 	/** 타임아웃 ms (기본 30분) */
 	timeout_ms?: number;
+	/** 스테이지 실행 기록 콜백 (optional) */
+	stageCallbacks?: StageCallbacks;
 }
 
 export interface PipelineResult {
@@ -104,111 +124,223 @@ export async function runPipeline(
 		maxCycles: config.max_cycles ?? 10,
 	});
 
+	const cb = config.stageCallbacks;
+
+	// Helper: wrap stage execution with callbacks
+	async function trackStage<T>(
+		stage: string,
+		promptSummary: string,
+		fn: () => Promise<T>,
+		resultSummaryFn: (result: T) => string,
+		resultFullFn?: (result: T) => unknown,
+	): Promise<T> {
+		let execId: string | undefined;
+		if (cb?.onStageStart) {
+			execId = await cb.onStageStart(config.target_id, stage, cycleCount, promptSummary);
+		}
+		try {
+			const result = await fn();
+			if (cb?.onStageComplete && execId) {
+				await cb.onStageComplete(
+					execId,
+					resultSummaryFn(result),
+					resultFullFn ? resultFullFn(result) : undefined,
+				);
+			}
+			return result;
+		} catch (err) {
+			if (cb?.onStageFail && execId) {
+				await cb.onStageFail(execId, err instanceof Error ? err.message : String(err));
+			}
+			throw err;
+		}
+	}
+
 	// ── ANALYZING ────────────────────────────────────────────
 	orchestrator.registerHandler("ANALYZING", async (ctx: StageContext) => {
-		analysisOutput = await runAnalysis(
-			{ target_id: config.target_id, target_url: config.target_url },
-			deps,
+		await trackStage(
+			"ANALYZING",
+			`Crawling ${config.target_url}, classifying site type, scoring 7 GEO dimensions`,
+			async () => {
+				analysisOutput = await runAnalysis(
+					{ target_id: config.target_id, target_url: config.target_url },
+					deps,
+				);
+				ctx.setRef("analysis", analysisOutput.report.report_id);
+				currentScore = analysisOutput.geo_scores.overall_score;
+				currentGrade = analysisOutput.geo_scores.grade;
+				currentDimensions = analysisOutput.geo_scores.dimensions;
+				initialScore = currentScore;
+				return analysisOutput;
+			},
+			(out) =>
+				`Score: ${out.geo_scores.overall_score}/100 (${out.geo_scores.grade}), Site: ${out.classification.site_type} (confidence: ${out.classification.confidence.toFixed(2)})`,
+			(out) => ({
+				score: out.geo_scores.overall_score,
+				grade: out.geo_scores.grade,
+				site_type: out.classification.site_type,
+				dimensions: out.geo_scores.dimensions.map((d) => ({
+					id: d.id,
+					label: d.label,
+					score: d.score,
+				})),
+			}),
 		);
-		ctx.setRef("analysis", analysisOutput.report.report_id);
-		currentScore = analysisOutput.geo_scores.overall_score;
-		currentGrade = analysisOutput.geo_scores.grade;
-		currentDimensions = analysisOutput.geo_scores.dimensions;
-		initialScore = currentScore;
 	});
 
 	// ── CLONING ──────────────────────────────────────────────
 	orchestrator.registerHandler("CLONING", async () => {
-		if (!analysisOutput) throw new Error("Analysis output missing");
-		cloneManager = new CloneManager(config.workspace_dir);
-		await cloneManager.createClone(
-			config.target_id,
-			config.target_url,
-			analysisOutput.crawl_data.html,
+		await trackStage(
+			"CLONING",
+			`Creating local clone of ${config.target_url}`,
+			async () => {
+				if (!analysisOutput) throw new Error("Analysis output missing");
+				cloneManager = new CloneManager(config.workspace_dir);
+				await cloneManager.createClone(
+					config.target_id,
+					config.target_url,
+					analysisOutput.crawl_data.html,
+				);
+				return { clone_path: config.workspace_dir };
+			},
+			(out) => `Clone created at ${out.clone_path}`,
 		);
 	});
 
 	// ── STRATEGIZING ─────────────────────────────────────────
 	orchestrator.registerHandler("STRATEGIZING", async (ctx: StageContext) => {
-		if (!analysisOutput) throw new Error("Analysis output missing");
-		strategyOutput = await runStrategy(
-			{
-				target_id: config.target_id,
-				analysis_report: analysisOutput.report,
-				use_llm: !!deps.chatLLM,
+		await trackStage(
+			"STRATEGIZING",
+			`Generating optimization plan (cycle ${cycleCount}), use_llm: ${!!deps.chatLLM}`,
+			async () => {
+				if (!analysisOutput) throw new Error("Analysis output missing");
+				strategyOutput = await runStrategy(
+					{
+						target_id: config.target_id,
+						analysis_report: analysisOutput.report,
+						use_llm: !!deps.chatLLM,
+					},
+					deps.chatLLM ? { chatLLM: deps.chatLLM } : undefined,
+				);
+				ctx.setRef("optimization", strategyOutput.plan.plan_id);
+				return strategyOutput;
 			},
-			deps.chatLLM ? { chatLLM: deps.chatLLM } : undefined,
+			(out) =>
+				`${out.plan.tasks.length} optimization tasks, rationale: ${(out.plan.strategy_rationale ?? "").slice(0, 100)}`,
+			(out) => ({
+				task_count: out.plan.tasks.length,
+				tasks: out.plan.tasks.map((t) => ({ id: t.task_id, title: t.title })),
+				rationale: out.plan.strategy_rationale,
+			}),
 		);
-		ctx.setRef("optimization", strategyOutput.plan.plan_id);
 	});
 
 	// ── OPTIMIZING ───────────────────────────────────────────
 	orchestrator.registerHandler("OPTIMIZING", async () => {
-		if (!strategyOutput || !cloneManager) throw new Error("Strategy or clone missing");
+		const taskTitles = strategyOutput?.plan.tasks.map((t) => t.title).join(", ") ?? "";
+		await trackStage(
+			"OPTIMIZING",
+			`Applying ${strategyOutput?.plan.tasks.length ?? 0} tasks: ${taskTitles.slice(0, 300)}`,
+			async () => {
+				if (!strategyOutput || !cloneManager)
+					throw new Error("Strategy or clone missing");
 
-		const tid = config.target_id;
-		optimizationResult = await runOptimization(
-			{
-				plan: strategyOutput.plan,
-				readFile: async (p) => cloneManager!.readWorkingFile(tid, p) ?? "",
-				writeFile: async (p, c) => cloneManager!.writeWorkingFile(tid, p, c),
-				listFiles: async () => cloneManager!.listWorkingFiles(tid),
+				const tid = config.target_id;
+				optimizationResult = await runOptimization(
+					{
+						plan: strategyOutput.plan,
+						readFile: async (p) => cloneManager!.readWorkingFile(tid, p) ?? "",
+						writeFile: async (p, c) => cloneManager!.writeWorkingFile(tid, p, c),
+						listFiles: async () => cloneManager!.listWorkingFiles(tid),
+					},
+					deps.chatLLM ? { chatLLM: deps.chatLLM } : undefined,
+				);
+				return optimizationResult;
 			},
-			deps.chatLLM ? { chatLLM: deps.chatLLM } : undefined,
+			(out) =>
+				`Applied: ${out.applied_tasks.length}, Skipped: ${out.skipped_tasks.length}, Files: ${out.files_modified.length}`,
+			(out) => ({
+				applied: out.applied_tasks,
+				skipped: out.skipped_tasks,
+				files: out.files_modified,
+			}),
 		);
 	});
 
 	// ── VALIDATING ───────────────────────────────────────────
 	orchestrator.registerHandler("VALIDATING", async (ctx: StageContext) => {
-		if (!cloneManager) throw new Error("Clone missing");
+		await trackStage(
+			"VALIDATING",
+			`Re-scoring optimized clone, cycle ${cycleCount}, target: ${config.target_score ?? 80}`,
+			async () => {
+				if (!cloneManager) throw new Error("Clone missing");
 
-		validationOutput = await runValidation(
-			{
-				target_id: config.target_id,
-				target_url: config.target_url,
-				before_score: currentScore,
-				before_grade: currentGrade,
-				before_dimensions: currentDimensions,
-				target_score: config.target_score ?? 80,
-				cycle_number: cycleCount,
-				max_cycles: config.max_cycles ?? 10,
+				validationOutput = await runValidation(
+					{
+						target_id: config.target_id,
+						target_url: config.target_url,
+						before_score: currentScore,
+						before_grade: currentGrade,
+						before_dimensions: currentDimensions,
+						target_score: config.target_score ?? 80,
+						cycle_number: cycleCount,
+						max_cycles: config.max_cycles ?? 10,
+					},
+					{
+						crawlClone: async () => {
+							const html =
+								cloneManager!.readWorkingFile(config.target_id, "index.html") ??
+								"";
+							return {
+								html,
+								url: config.target_url,
+								status_code: 200,
+								content_type: "text/html",
+								response_time_ms: 0,
+								robots_txt:
+									cloneManager!.readWorkingFile(
+										config.target_id,
+										"robots.txt",
+									) ?? null,
+								llms_txt:
+									cloneManager!.readWorkingFile(
+										config.target_id,
+										"llms.txt",
+									) ?? null,
+								sitemap_xml: null,
+								json_ld: [],
+								meta_tags: {},
+								title: "",
+								canonical_url: null,
+								links: [],
+								headers: {},
+							};
+						},
+						scoreTarget: deps.scoreTarget,
+					},
+				);
+
+				ctx.setRef("validation", `validation-cycle-${cycleCount}`);
+				currentScore = validationOutput.after_score;
+				currentGrade = validationOutput.after_grade;
+				currentDimensions = validationOutput.after_dimensions;
+
+				if (validationOutput.needs_more_cycles) {
+					cycleCount++;
+					cloneManager.incrementCycle(config.target_id);
+					ctx.setNextStage("STRATEGIZING");
+				}
+				return validationOutput;
 			},
-			{
-				crawlClone: async () => {
-					// 클론의 working HTML을 CrawlData로 변환
-					const html = cloneManager!.readWorkingFile(config.target_id, "index.html") ?? "";
-					return {
-						html,
-						url: config.target_url,
-						status_code: 200,
-						content_type: "text/html",
-						response_time_ms: 0,
-						robots_txt: cloneManager!.readWorkingFile(config.target_id, "robots.txt") ?? null,
-						llms_txt: cloneManager!.readWorkingFile(config.target_id, "llms.txt") ?? null,
-						sitemap_xml: null,
-						json_ld: [],
-						meta_tags: {},
-						title: "",
-						canonical_url: null,
-						links: [],
-						headers: {},
-					};
-				},
-				scoreTarget: deps.scoreTarget,
-			},
+			(out) =>
+				`Score: ${out.after_score} (delta: ${out.delta >= 0 ? "+" : ""}${out.delta}), ${out.needs_more_cycles ? "continuing" : out.stop_reason ?? "done"}`,
+			(out) => ({
+				after: out.after_score,
+				delta: out.delta,
+				needs_more: out.needs_more_cycles,
+				stop_reason: out.stop_reason,
+			}),
 		);
-
-		ctx.setRef("validation", `validation-cycle-${cycleCount}`);
-		currentScore = validationOutput.after_score;
-		currentGrade = validationOutput.after_grade;
-		currentDimensions = validationOutput.after_dimensions;
-
-		if (validationOutput.needs_more_cycles) {
-			cycleCount++;
-			cloneManager.incrementCycle(config.target_id);
-			ctx.setNextStage("STRATEGIZING");
-		}
-		// else: proceed to REPORTING (default)
 	});
 
 	// ── REPORTING ────────────────────────────────────────────
@@ -216,69 +348,95 @@ export async function runPipeline(
 	let dashboardHtml: string | null = null;
 
 	orchestrator.registerHandler("REPORTING", async () => {
-		const builder = new ReportBuilder(
-			`report-${config.target_id}-${Date.now()}`,
-			config.target_id,
-			config.target_url,
-		);
+		await trackStage(
+			"REPORTING",
+			"Generating report and dashboard HTML",
+			async () => {
+				const builder = new ReportBuilder(
+					`report-${config.target_id}-${Date.now()}`,
+					config.target_id,
+					config.target_url,
+				);
 
-		builder
-			.setSiteType(analysisOutput?.classification.site_type ?? "generic")
-			.setCycleCount(cycleCount)
-			.setOverallScores(initialScore, currentScore)
-			.setGrades(analysisOutput?.geo_scores.grade ?? "Unknown", currentGrade);
+				builder
+					.setSiteType(analysisOutput?.classification.site_type ?? "generic")
+					.setCycleCount(cycleCount)
+					.setOverallScores(initialScore, currentScore)
+					.setGrades(analysisOutput?.geo_scores.grade ?? "Unknown", currentGrade);
 
-		// Add dimension comparisons
-		for (const dim of currentDimensions) {
-			const before = analysisOutput?.geo_scores.dimensions.find((d) => d.id === dim.id);
-			builder.addScoreComparison(`${dim.id} ${dim.label}`, before?.score ?? 0, dim.score);
-		}
-
-		// Add changes from optimization
-		if (optimizationResult) {
-			for (const taskId of optimizationResult.applied_tasks) {
-				const task = strategyOutput?.plan.tasks.find((t) => t.task_id === taskId);
-				if (task) {
-					builder.addChange({
-						file_path: task.target_element ?? "unknown",
-						change_type: "modified",
-						summary: task.title,
-						impact_score: 0,
-						affected_dimensions: [],
-						diff_preview: "",
-					});
+				for (const dim of currentDimensions) {
+					const before = analysisOutput?.geo_scores.dimensions.find(
+						(d) => d.id === dim.id,
+					);
+					builder.addScoreComparison(
+						`${dim.id} ${dim.label}`,
+						before?.score ?? 0,
+						dim.score,
+					);
 				}
-			}
-		}
 
-		builder.addKeyImprovement(
-			`점수 ${initialScore} → ${currentScore} (+${currentScore - initialScore})`,
+				if (optimizationResult) {
+					for (const taskId of optimizationResult.applied_tasks) {
+						const task = strategyOutput?.plan.tasks.find(
+							(t) => t.task_id === taskId,
+						);
+						if (task) {
+							builder.addChange({
+								file_path: task.target_element ?? "unknown",
+								change_type: "modified",
+								summary: task.title,
+								impact_score: 0,
+								affected_dimensions: [],
+								diff_preview: "",
+							});
+						}
+					}
+				}
+
+				builder.addKeyImprovement(
+					`점수 ${initialScore} → ${currentScore} (+${currentScore - initialScore})`,
+				);
+				if (validationOutput?.stop_reason) {
+					builder.addRemainingIssue(`중단 사유: ${validationOutput.stop_reason}`);
+				}
+
+				const report = builder.build();
+				dashboardHtml = generateDashboardHtml({ report });
+
+				try {
+					const archiveBuilder = new ArchiveBuilder(config.workspace_dir);
+					const origFiles = new Map<string, string>();
+					const optFiles = new Map<string, string>();
+
+					if (cloneManager) {
+						const origHtml = cloneManager.readOriginalFile(
+							config.target_id,
+							"index.html",
+						);
+						if (origHtml) origFiles.set("index.html", origHtml);
+						const workHtml = cloneManager.readWorkingFile(
+							config.target_id,
+							"index.html",
+						);
+						if (workHtml) optFiles.set("index.html", workHtml);
+					}
+
+					const archiveResult = archiveBuilder.build(
+						report,
+						origFiles,
+						optFiles,
+						new Map(),
+					);
+					reportPath = archiveResult.archive_path;
+				} catch {
+					// Archive generation failure is non-fatal
+				}
+
+				return { initial: initialScore, final: currentScore };
+			},
+			(out) =>
+				`Report: ${out.initial}→${out.final} (+${out.final - out.initial})`,
 		);
-		if (validationOutput?.stop_reason) {
-			builder.addRemainingIssue(`중단 사유: ${validationOutput.stop_reason}`);
-		}
-
-		const report = builder.build();
-		dashboardHtml = generateDashboardHtml({ report });
-
-		// Save archive if workspace available
-		try {
-			const archiveBuilder = new ArchiveBuilder(config.workspace_dir);
-			const origFiles = new Map<string, string>();
-			const optFiles = new Map<string, string>();
-
-			if (cloneManager) {
-				const origHtml = cloneManager.readOriginalFile(config.target_id, "index.html");
-				if (origHtml) origFiles.set("index.html", origHtml);
-				const workHtml = cloneManager.readWorkingFile(config.target_id, "index.html");
-				if (workHtml) optFiles.set("index.html", workHtml);
-			}
-
-			const archiveResult = archiveBuilder.build(report, origFiles, optFiles, new Map());
-			reportPath = archiveResult.archive_path;
-		} catch {
-			// Archive generation failure is non-fatal
-		}
 	});
 
 	// ── Execute Pipeline ─────────────────────────────────────

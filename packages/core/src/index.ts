@@ -9,6 +9,7 @@ export * from "./db/connection.js";
 export * from "./db/schema.js";
 export * from "./db/repositories/target-repository.js";
 export * from "./db/repositories/pipeline-repository.js";
+export * from "./db/repositories/stage-execution-repository.js";
 
 // Logger
 export * from "./logger.js";

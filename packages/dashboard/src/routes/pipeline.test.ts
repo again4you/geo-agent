@@ -19,7 +19,7 @@ const dbPath = path.join(testDir, "data", "geo-agent.db");
 const { app } = await import("../server.js");
 const { initTargetsRouter } = await import("./targets.js");
 const { initPipelineRouter } = await import("./pipeline.js");
-const { createDatabase, loadSettings, ensureTables } = await import("@geo-agent/core");
+const { createDatabase, loadSettings, ensureTables, StageExecutionRepository } = await import("@geo-agent/core");
 
 const settings = loadSettings();
 const db = createDatabase(settings);
@@ -619,5 +619,123 @@ describe("Pipeline lifecycle", () => {
 		const latest = await latestRes.json();
 		expect(latest.pipeline_id).toBe(second.pipeline_id);
 		expect(latest.stage).toBe("INIT");
+	});
+});
+
+// ══════════════════════════════════════════════════════════════
+// GET /api/targets/:id/pipeline/:pipelineId/stages
+// ══════════════════════════════════════════════════════════════
+
+describe("GET /api/targets/:id/pipeline/:pipelineId/stages", () => {
+	it("returns empty array for pipeline with no stage executions", async () => {
+		const targetId = await getTargetId();
+		const pRes = await createPipeline(targetId);
+		const pipeline = await pRes.json();
+
+		const res = await app.request(
+			`/api/targets/${targetId}/pipeline/${pipeline.pipeline_id}/stages`,
+		);
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body).toEqual([]);
+	});
+
+	it("returns stage executions after they are created directly via repo", async () => {
+		const targetId = await getTargetId();
+		const pRes = await createPipeline(targetId);
+		const pipeline = await pRes.json();
+
+		// Create stage executions directly via the repository
+		const stageRepo = new StageExecutionRepository(db);
+		const exec1 = await stageRepo.create(pipeline.pipeline_id, "ANALYZING", 0, "Crawling site");
+		await stageRepo.complete(exec1.id, "Score: 71/100");
+		await stageRepo.create(pipeline.pipeline_id, "CLONING", 0, "Creating clone");
+
+		const res = await app.request(
+			`/api/targets/${targetId}/pipeline/${pipeline.pipeline_id}/stages`,
+		);
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.length).toBe(2);
+		expect(body[0].stage).toBe("ANALYZING");
+		expect(body[0].status).toBe("completed");
+		expect(body[0].result_summary).toBe("Score: 71/100");
+		expect(body[1].stage).toBe("CLONING");
+		expect(body[1].status).toBe("running");
+	});
+
+	it("does not include result_full in list response", async () => {
+		const targetId = await getTargetId();
+		const pRes = await createPipeline(targetId);
+		const pipeline = await pRes.json();
+
+		const stageRepo = new StageExecutionRepository(db);
+		const exec = await stageRepo.create(pipeline.pipeline_id, "ANALYZING", 0, "Test");
+		await stageRepo.complete(exec.id, "Done", { full: "data" });
+
+		const res = await app.request(
+			`/api/targets/${targetId}/pipeline/${pipeline.pipeline_id}/stages`,
+		);
+		const body = await res.json();
+		expect(body[0].result_full).toBeUndefined();
+	});
+});
+
+// ══════════════════════════════════════════════════════════════
+// GET /api/targets/:id/pipeline/:pipelineId/stages/:stageId
+// ══════════════════════════════════════════════════════════════
+
+describe("GET /api/targets/:id/pipeline/:pipelineId/stages/:stageId", () => {
+	it("returns single stage with result_full", async () => {
+		const targetId = await getTargetId();
+		const pRes = await createPipeline(targetId);
+		const pipeline = await pRes.json();
+
+		const stageRepo = new StageExecutionRepository(db);
+		const exec = await stageRepo.create(pipeline.pipeline_id, "ANALYZING", 0, "Crawl");
+		await stageRepo.complete(exec.id, "Score: 71", { score: 71, grade: "Needs Improvement" });
+
+		const res = await app.request(
+			`/api/targets/${targetId}/pipeline/${pipeline.pipeline_id}/stages/${exec.id}`,
+		);
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.id).toBe(exec.id);
+		expect(body.result_full).not.toBeNull();
+	});
+
+	it("returns 404 for non-existent stage", async () => {
+		const targetId = await getTargetId();
+		const pRes = await createPipeline(targetId);
+		const pipeline = await pRes.json();
+
+		const res = await app.request(
+			`/api/targets/${targetId}/pipeline/${pipeline.pipeline_id}/stages/non-existent`,
+		);
+		expect(res.status).toBe(404);
+	});
+});
+
+// ══════════════════════════════════════════════════════════════
+// GET /api/targets/:id/cycle/status — includes stage info
+// ══════════════════════════════════════════════════════════════
+
+describe("GET /api/targets/:id/cycle/status — stage info", () => {
+	it("includes current_prompt and stage_count from stage executions", async () => {
+		const targetId = await getTargetId();
+		await createPipeline(targetId);
+
+		const stageRepo = new StageExecutionRepository(db);
+		const statusRes1 = await app.request(`/api/targets/${targetId}/cycle/status`);
+		const status1 = await statusRes1.json();
+		const pipelineId = status1.pipeline_id;
+
+		await stageRepo.create(pipelineId, "ANALYZING", 0, "Crawling example.com");
+
+		const statusRes2 = await app.request(`/api/targets/${targetId}/cycle/status`);
+		const status2 = await statusRes2.json();
+
+		expect(status2.current_prompt).toBe("Crawling example.com");
+		expect(status2.stage_count).toBe(1);
 	});
 });

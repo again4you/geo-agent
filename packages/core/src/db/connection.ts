@@ -94,6 +94,21 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
 	resume_from_stage TEXT
 );
 
+CREATE TABLE IF NOT EXISTS stage_executions (
+	id TEXT PRIMARY KEY,
+	pipeline_id TEXT NOT NULL,
+	stage TEXT NOT NULL,
+	cycle INTEGER NOT NULL DEFAULT 0,
+	status TEXT NOT NULL DEFAULT 'pending',
+	prompt_summary TEXT NOT NULL DEFAULT '',
+	result_summary TEXT NOT NULL DEFAULT '',
+	result_full TEXT,
+	error_message TEXT,
+	started_at TEXT NOT NULL,
+	completed_at TEXT,
+	duration_ms INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS error_events (
 	error_id TEXT PRIMARY KEY,
 	timestamp TEXT NOT NULL,
