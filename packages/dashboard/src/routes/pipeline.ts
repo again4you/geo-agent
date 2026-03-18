@@ -359,6 +359,7 @@ pipelineRouter.get("/:id/cycle/status", async (c) => {
 		retry_count: pipeline.retry_count,
 		started_at: pipeline.started_at,
 		updated_at: pipeline.updated_at,
+		completed_at: pipeline.completed_at ?? null,
 		current_prompt: latestStage?.prompt_summary ?? null,
 		current_result: latestStage?.result_summary ?? null,
 		stage_count: stages.length,

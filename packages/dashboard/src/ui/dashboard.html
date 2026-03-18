@@ -375,19 +375,24 @@ let targets = [];
 let prompts = [];
 let providers = [];
 
-// ── Navigation ──────────────────────────────────────
+// ── Navigation (with URL hash persistence) ──────────
+function switchTab(tabName) {
+	document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
+	var btn = document.querySelector('.nav button[data-tab="' + tabName + '"]');
+	if (btn) btn.classList.add('active');
+	document.querySelectorAll('.main > div[id^="tab-"]').forEach(t => t.classList.add('hidden'));
+	var tabEl = document.getElementById('tab-' + tabName);
+	if (tabEl) tabEl.classList.remove('hidden');
+	window.location.hash = tabName;
+	if (tabName === 'targets') loadTargets();
+	if (tabName === 'pipelines') loadPipelines();
+	if (tabName === 'prompts') loadPrompts();
+	if (tabName === 'llm') loadLLMProviders();
+	if (tabName === 'evaluation') initEvalTab();
+}
+
 document.querySelectorAll('.nav button').forEach(btn => {
-	btn.addEventListener('click', () => {
-		document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
-		btn.classList.add('active');
-		document.querySelectorAll('.main > div[id^="tab-"]').forEach(t => t.classList.add('hidden'));
-		document.getElementById('tab-' + btn.dataset.tab).classList.remove('hidden');
-		if (btn.dataset.tab === 'targets') loadTargets();
-		if (btn.dataset.tab === 'pipelines') loadPipelines();
-		if (btn.dataset.tab === 'prompts') loadPrompts();
-		if (btn.dataset.tab === 'llm') loadLLMProviders();
-		if (btn.dataset.tab === 'evaluation') initEvalTab();
-	});
+	btn.addEventListener('click', () => switchTab(btn.dataset.tab));
 });
 
 // ── Toast ────────────────────────────────────────────
@@ -541,6 +546,17 @@ async function loadPipelines() {
 			const promptPreview = status.current_prompt ? esc(status.current_prompt).slice(0, 120) : '';
 			const resultPreview = status.current_result ? esc(status.current_result).slice(0, 120) : '';
 			const runningIndicator = isRunning ? ' <span style="animation:stagePulse 1.5s infinite;color:var(--warning);font-size:12px;">⏳ Running...</span>' : '';
+			// Show elapsed time or "completed X ago"
+			let timeInfo = 'Started: ' + new Date(status.started_at).toLocaleString();
+			if (status.completed_at) {
+				const elapsedSec = Math.round((new Date(status.completed_at) - new Date(status.started_at)) / 1000);
+				const agoSec = Math.round((Date.now() - new Date(status.completed_at)) / 1000);
+				const agoLabel = agoSec < 60 ? agoSec + 's ago' : agoSec < 3600 ? Math.round(agoSec/60) + 'm ago' : Math.round(agoSec/3600) + 'h ago';
+				timeInfo += ' | Completed: ' + agoLabel + ' (took ' + elapsedSec + 's)';
+			} else if (isRunning) {
+				const runningSec = Math.round((Date.now() - new Date(status.started_at)) / 1000);
+				timeInfo += ' | Running: ' + runningSec + 's';
+			}
 			html += `<div class="card pipeline-card" onclick="togglePipeline(this, '${t.id}', '${status.pipeline_id}')">
 				<div style="display:flex;justify-content:space-between;align-items:center;">
 					<div style="display:flex;align-items:center;gap:4px;flex:1;min-width:0;">
@@ -557,7 +573,7 @@ async function loadPipelines() {
 					</div>
 				</div>
 				<div style="margin-top:6px;font-size:12px;color:var(--text-muted);">
-					Started: ${new Date(status.started_at).toLocaleString()} | Stages: ${status.stage_count || 0} | Retries: ${status.retry_count}
+					${timeInfo} | Stages: ${status.stage_count || 0} | Retries: ${status.retry_count}
 				</div>
 				${promptPreview ? '<div class="current-prompt-preview">' + promptPreview + '</div>' : ''}
 				${resultPreview && status.is_terminal ? '<div class="current-prompt-preview" style="color:var(--success);">' + resultPreview + '</div>' : ''}
@@ -656,7 +672,9 @@ async function togglePipeline(card, targetId, pipelineId) {
 async function startPipeline(targetId) {
 	try {
 		await api('/api/targets/' + targetId + '/pipeline?execute=true', { method: 'POST' });
-		toast('Pipeline started');
+		toast('Pipeline started — watching progress...');
+		// Immediately start auto-refresh and load pipelines
+		startPipelineAutoRefresh();
 		loadPipelines();
 	} catch (e) { toast(e.message, 'error'); }
 }
@@ -1481,7 +1499,12 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s || 
 
 // ── Init ─────────────────────────────────────────────
 checkHealth();
-loadTargets();
+
+// Restore active tab from URL hash, default to 'targets'
+var initTab = (window.location.hash || '').replace('#', '') || 'targets';
+var validTabs = ['targets', 'pipelines', 'prompts', 'evaluation', 'llm'];
+if (validTabs.indexOf(initTab) === -1) initTab = 'targets';
+switchTab(initTab);
 </script>
 </body>
 </html>
