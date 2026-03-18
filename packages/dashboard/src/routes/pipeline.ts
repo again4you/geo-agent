@@ -21,6 +21,7 @@ import { crawlMultiplePages, crawlTarget, scoreTarget } from "@geo-agent/skills"
  * /api/targets/:id/cycle    — 사이클 제어
  */
 import { Hono } from "hono";
+import { broadcastSSE } from "../server.js";
 
 let sharedPipelineRepo: PipelineRepository | null = null;
 let sharedStageRepo: StageExecutionRepository | null = null;
@@ -115,13 +116,33 @@ pipelineRouter.post("/:id/pipeline", async (c) => {
 			onStageStart: async (_pipelineId, stage, cycle, promptSummary) => {
 				await repo.updateStage(pipeline.pipeline_id, stage as never);
 				const exec = await stageRepo.create(pipeline.pipeline_id, stage, cycle, promptSummary);
+				broadcastSSE("pipeline:stage", {
+					target_id: targetId,
+					pipeline_id: pipeline.pipeline_id,
+					stage,
+					cycle,
+					status: "running",
+					prompt_summary: promptSummary,
+				});
 				return exec.id;
 			},
 			onStageComplete: async (executionId, resultSummary, resultFull) => {
 				await stageRepo.complete(executionId, resultSummary, resultFull);
+				broadcastSSE("pipeline:stage-complete", {
+					target_id: targetId,
+					pipeline_id: pipeline.pipeline_id,
+					execution_id: executionId,
+					result_summary: resultSummary,
+				});
 			},
 			onStageFail: async (executionId, error) => {
 				await stageRepo.fail(executionId, error);
+				broadcastSSE("pipeline:stage-fail", {
+					target_id: targetId,
+					pipeline_id: pipeline.pipeline_id,
+					execution_id: executionId,
+					error,
+				});
 			},
 		};
 
@@ -199,11 +220,24 @@ async function executePipelineAsync(
 
 		if (result.success) {
 			await repo.updateStage(pipelineId, "COMPLETED");
+			broadcastSSE("pipeline:completed", {
+				target_id: targetId,
+				pipeline_id: pipelineId,
+				initial_score: result.initial_score,
+				final_score: result.final_score,
+				delta: result.delta,
+				cycles: result.cycles_completed,
+			});
 			console.log(
 				`✅ Pipeline completed for ${targetId}: ${result.initial_score} → ${result.final_score} (+${result.delta}) [${result.cycles_completed} cycles]`,
 			);
 		} else {
 			await repo.setError(pipelineId, result.error ?? "Unknown error");
+			broadcastSSE("pipeline:failed", {
+				target_id: targetId,
+				pipeline_id: pipelineId,
+				error: result.error,
+			});
 			console.log(`❌ Pipeline failed for ${targetId}: ${result.error}`);
 		}
 	} catch (err) {

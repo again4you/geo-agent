@@ -16,6 +16,24 @@ import { initPipelineRouter, pipelineRouter } from "./routes/pipeline.js";
 import { settingsRouter } from "./routes/settings.js";
 import { initTargetsRouter, targetsRouter } from "./routes/targets.js";
 
+// ── SSE Event Broadcaster ────────────────────────────────────
+
+type SSEClient = { id: string; controller: ReadableStreamDefaultController };
+const sseClients: SSEClient[] = [];
+let sseClientIdCounter = 0;
+
+export function broadcastSSE(event: string, data: unknown): void {
+	const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+	for (let i = sseClients.length - 1; i >= 0; i--) {
+		try {
+			sseClients[i].controller.enqueue(new TextEncoder().encode(msg));
+		} catch {
+			// Client disconnected — remove
+			sseClients.splice(i, 1);
+		}
+	}
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -61,6 +79,31 @@ app.get("/health", (c) => c.json({ status: "ok", timestamp: new Date().toISOStri
 app.route("/api/targets", targetsRouter);
 app.route("/api/targets", pipelineRouter);
 app.route("/api/settings", settingsRouter);
+
+// SSE endpoint — real-time pipeline events
+app.get("/api/events", (c) => {
+	const stream = new ReadableStream({
+		start(controller) {
+			const clientId = `sse-${++sseClientIdCounter}`;
+			sseClients.push({ id: clientId, controller });
+
+			// Send initial heartbeat
+			controller.enqueue(new TextEncoder().encode(": heartbeat\n\n"));
+		},
+		cancel() {
+			// Client disconnected — cleanup handled in broadcastSSE
+		},
+	});
+
+	return new Response(stream, {
+		headers: {
+			"Content-Type": "text/event-stream",
+			"Cache-Control": "no-cache",
+			Connection: "keep-alive",
+			"Access-Control-Allow-Origin": "*",
+		},
+	});
+});
 
 // Dashboard UI — serve single HTML SPA
 let dashboardHtmlCache: string | null = null;

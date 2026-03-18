@@ -168,7 +168,9 @@ describe("PipelineRepository", () => {
 
 		it("14. returns the latest (most recent) pipeline", async () => {
 			await repo.create(FAKE_TARGET_ID);
+			await new Promise((r) => setTimeout(r, 10)); // ensure different started_at (KI-002)
 			await repo.create(FAKE_TARGET_ID);
+			await new Promise((r) => setTimeout(r, 10));
 			const latest = await repo.create(FAKE_TARGET_ID);
 
 			const result = await repo.findLatestByTargetId(FAKE_TARGET_ID);

@@ -598,11 +598,74 @@ async function loadPipelines() {
 	}
 	container.innerHTML = html;
 
-	// Auto-refresh when any pipeline is running
-	if (hasRunning) {
+	// Auto-refresh when any pipeline is running (SSE preferred, polling fallback)
+	if (hasRunning && !sseSource) {
 		startPipelineAutoRefresh();
-	} else {
+	} else if (!hasRunning) {
 		stopPipelineAutoRefresh();
+	}
+}
+
+// ── SSE Real-time Events ────────────────────────────────
+var sseSource = null;
+
+function initSSE() {
+	if (sseSource) return;
+	try {
+		sseSource = new EventSource('/api/events');
+
+		sseSource.addEventListener('pipeline:stage', function(e) {
+			var data = JSON.parse(e.data);
+			console.log('🔄 Stage:', data.stage, data.status);
+			// Refresh pipelines tab if active
+			var activeTab = document.querySelector('.nav button.active');
+			if (activeTab && activeTab.dataset.tab === 'pipelines') {
+				loadPipelines();
+			}
+		});
+
+		sseSource.addEventListener('pipeline:stage-complete', function(e) {
+			var data = JSON.parse(e.data);
+			console.log('✅ Stage complete:', data.result_summary);
+			var activeTab = document.querySelector('.nav button.active');
+			if (activeTab && activeTab.dataset.tab === 'pipelines') {
+				loadPipelines();
+			}
+		});
+
+		sseSource.addEventListener('pipeline:completed', function(e) {
+			var data = JSON.parse(e.data);
+			showToast('Pipeline completed: ' + data.initial_score + ' → ' + data.final_score + ' (+' + data.delta + ')', 'success');
+			loadPipelines();
+			// Also refresh evaluation if on that tab
+			var activeTab = document.querySelector('.nav button.active');
+			if (activeTab && activeTab.dataset.tab === 'evaluation') {
+				loadEvaluation();
+			}
+		});
+
+		sseSource.addEventListener('pipeline:failed', function(e) {
+			var data = JSON.parse(e.data);
+			showToast('Pipeline failed: ' + (data.error || 'Unknown error'), 'error');
+			loadPipelines();
+		});
+
+		sseSource.addEventListener('pipeline:stage-fail', function(e) {
+			var data = JSON.parse(e.data);
+			console.log('❌ Stage failed:', data.error);
+			loadPipelines();
+		});
+
+		sseSource.onerror = function() {
+			// SSE disconnected — fall back to polling
+			console.warn('SSE disconnected, falling back to polling');
+			sseSource.close();
+			sseSource = null;
+			startPipelineAutoRefresh();
+		};
+	} catch(err) {
+		console.warn('SSE not available, using polling fallback');
+		startPipelineAutoRefresh();
 	}
 }
 
@@ -1570,6 +1633,9 @@ var initTab = (window.location.hash || '').replace('#', '') || 'targets';
 var validTabs = ['targets', 'pipelines', 'prompts', 'evaluation', 'llm'];
 if (validTabs.indexOf(initTab) === -1) initTab = 'targets';
 switchTab(initTab);
+
+// Initialize SSE for real-time updates
+initSSE();
 </script>
 </body>
 </html>
