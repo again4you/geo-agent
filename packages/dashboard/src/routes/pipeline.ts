@@ -80,6 +80,16 @@ pipelineRouter.get("/:id/pipeline/latest", async (c) => {
 	return c.json(pipeline);
 });
 
+// GET /api/targets/:id/pipeline/:pipelineId — 특정 파이프라인 상태
+pipelineRouter.get("/:id/pipeline/:pipelineId", async (c) => {
+	const repo = getRepo();
+	const pipeline = await repo.findById(c.req.param("pipelineId"));
+	if (!pipeline) {
+		return c.json({ error: "Pipeline not found" }, 404);
+	}
+	return c.json(pipeline);
+});
+
 // POST /api/targets/:id/pipeline — 새 파이프라인 생성 (+ execute=true 시 비동기 실행)
 pipelineRouter.post("/:id/pipeline", async (c) => {
 	const repo = getRepo();

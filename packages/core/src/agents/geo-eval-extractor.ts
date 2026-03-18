@@ -395,6 +395,211 @@ export function analyzeJsDependency(html: string): JsDependencyInfo {
 	};
 }
 
+// ── Strengths / Weaknesses / Opportunities ──────────────────
+
+export interface Finding {
+	title: string;
+	description: string;
+	icon: string;
+}
+
+/**
+ * 분석 데이터로부터 잘 된 점 / 취약점 / 기회를 자동 생성한다.
+ */
+export function generateFindings(
+	botPolicies: BotPolicyEntry[],
+	llmsTxt: { exists: boolean; content_preview: string | null },
+	schemaCoverage: SchemaCoverageEntry[],
+	productInfo: Array<{ page_url: string; filename: string; info: ExtractedProductInfo }>,
+	jsDependency: JsDependencyInfo,
+	marketingClaims: MarketingClaim[],
+	dimensions?: Array<{ id: string; label: string; score: number }>,
+): { strengths: Finding[]; weaknesses: Finding[]; opportunities: Finding[] } {
+	const strengths: Finding[] = [];
+	const weaknesses: Finding[] = [];
+	const opportunities: Finding[] = [];
+
+	// ── Strengths ──
+	const allowedBots = botPolicies.filter((b) => b.status === "allowed" || b.status === "partial");
+	if (allowedBots.length >= 3) {
+		strengths.push({
+			title: "주요 AI 봇 허용",
+			description: `${allowedBots.map((b) => b.bot_name).join(", ")} 등 ${allowedBots.length}개 AI 봇에 대해 크롤링 허용/부분 허용. LLM이 제품 정보에 접근 가능.`,
+			icon: "✅",
+		});
+	}
+
+	const presentSchemas = schemaCoverage.filter((s) => s.present);
+	if (presentSchemas.length >= 3) {
+		const types = presentSchemas.map((s) => s.schema_type).join(", ");
+		strengths.push({
+			title: "다수 Schema.org 타입 구현",
+			description: `${types} 등 ${presentSchemas.length}개 스키마 타입 구현. LLM이 구조적으로 정보를 파싱 가능.`,
+			icon: "✅",
+		});
+	}
+
+	const pagesWithProduct = productInfo.filter(
+		(p) => p.info.product_name || p.info.specs_in_schema.length > 0 || p.info.has_aggregate_rating,
+	);
+	if (pagesWithProduct.length > 0) {
+		const names = pagesWithProduct.slice(0, 3).map((p) => p.info.product_name ?? p.filename).join(", ");
+		strengths.push({
+			title: "제품 구조화 데이터 존재",
+			description: `${pagesWithProduct.length}개 페이지에서 제품 정보 구조화 (${names}). LLM이 제품명/가격/평점 파악 가능.`,
+			icon: "✅",
+		});
+	}
+
+	const orgSchema = schemaCoverage.find(
+		(s) => (s.schema_type === "Organization" || s.schema_type === "Corporation") && s.present,
+	);
+	if (orgSchema) {
+		strengths.push({
+			title: `${orgSchema.schema_type} 스키마 구현`,
+			description: "홈페이지에 기업 스키마 구현으로 LLM이 회사 정보(설립 연도, 사업 분야)를 인식 가능.",
+			icon: "✅",
+		});
+	}
+
+	if (dimensions) {
+		const highDims = dimensions.filter((d) => d.score >= 70);
+		for (const dim of highDims.slice(0, 2)) {
+			strengths.push({
+				title: `${dim.label} 우수 (${dim.score.toFixed(0)}점)`,
+				description: `${dim.id} ${dim.label} 영역에서 높은 점수를 기록. GEO 최적화가 잘 된 영역.`,
+				icon: "✅",
+			});
+		}
+	}
+
+	// ── Weaknesses ──
+	if (!llmsTxt.exists) {
+		weaknesses.push({
+			title: "llms.txt 미존재",
+			description: "GEO 필수 요소인 llms.txt 파일이 없음. LLM에게 사이트 구조, 인용 허용 범위, 제품 정보 소스를 안내하지 못함.",
+			icon: "❌",
+		});
+	}
+
+	const missingCritical = schemaCoverage.filter(
+		(s) => !s.present && ["Product", "Offer", "AggregateRating"].includes(s.schema_type),
+	);
+	if (missingCritical.length > 0) {
+		weaknesses.push({
+			title: `핵심 스키마 미구현: ${missingCritical.map((s) => s.schema_type).join(", ")}`,
+			description: "주력 제품 페이지에 표준 Product/Offer/AggregateRating 스키마 없음. LLM이 제품 정보를 구조적으로 파싱 불가.",
+			icon: "❌",
+		});
+	}
+
+	if (jsDependency.estimated_js_dependency > 0.5) {
+		weaknesses.push({
+			title: "JavaScript 과의존 · 스펙 데이터 부재",
+			description: `JS 의존도 ${Math.round(jsDependency.estimated_js_dependency * 100)}%. 주요 스펙이 JS 렌더링 후에만 노출. LLM 크롤러 대부분이 정적 HTML만 수집하므로 정보 손실.`,
+			icon: "❌",
+		});
+	}
+
+	const notSpecBots = botPolicies.filter((b) => b.status === "not_specified");
+	if (notSpecBots.length >= 2) {
+		weaknesses.push({
+			title: `${notSpecBots.length}개 AI 봇 미명시`,
+			description: `${notSpecBots.map((b) => b.bot_name).join(", ")}에 대한 정책 미명시. 기본 크롤러 규칙만 적용.`,
+			icon: "⚠️",
+		});
+	}
+
+	const unverified = marketingClaims.filter((c) => c.verifiability === "unverifiable");
+	if (unverified.length >= 2) {
+		weaknesses.push({
+			title: `${unverified.length}개 마케팅 클레임 출처 없음`,
+			description: "출처 없는 마케팅 주장이 다수. LLM 팩트 체크 시 신뢰도 저하 위험.",
+			icon: "⚠️",
+		});
+	}
+
+	if (dimensions) {
+		const lowDims = dimensions.filter((d) => d.score < 30);
+		for (const dim of lowDims.slice(0, 2)) {
+			weaknesses.push({
+				title: `${dim.label} 매우 미흡 (${dim.score.toFixed(0)}점)`,
+				description: `${dim.id} 영역이 심각하게 낮음. 구조화 데이터와 콘텐츠 보강 시급.`,
+				icon: "❌",
+			});
+		}
+	}
+
+	// ── Opportunities ──
+	if (missingCritical.length > 0) {
+		opportunities.push({
+			title: "Product Schema + 스펙 additionalProperty 추가",
+			description: "주력 제품에 Product + Offer + AggregateRating 스키마 적용 시 LLM 인용률 대폭 향상 기대. 업계 데이터: 스키마 적용 시 AI 정답률 16%→54%.",
+			icon: "🚀",
+		});
+	}
+
+	if (!llmsTxt.exists) {
+		opportunities.push({
+			title: "llms.txt 도입",
+			description: "llms.txt 생성으로 LLM에게 제품 데이터 소스, 인용 가이드라인, API 엔드포인트를 명시적으로 제공 가능.",
+			icon: "🚀",
+		});
+	}
+
+	const faqMissing = !schemaCoverage.find((s) => s.schema_type === "FAQPage" && s.present);
+	if (faqMissing) {
+		opportunities.push({
+			title: "FAQPage 스키마 추가",
+			description: "주요 질의 패턴에 맞는 FAQ 구조화 데이터 추가로 AI Overview 노출 증가 가능.",
+			icon: "🚀",
+		});
+	}
+
+	if (jsDependency.estimated_js_dependency > 0.3) {
+		opportunities.push({
+			title: "SSR/SSG로 정적 HTML 콘텐츠 강화",
+			description: "핵심 스펙/가격 데이터를 정적 HTML에 포함 시 LLM 크롤러가 JS 없이도 정보 수집 가능.",
+			icon: "🚀",
+		});
+	}
+
+	return { strengths: strengths.slice(0, 5), weaknesses: weaknesses.slice(0, 5), opportunities: opportunities.slice(0, 5) };
+}
+
+// ── Allowed Paths Analysis ──────────────────────────────────
+
+export interface PathAccessEntry {
+	path: string;
+	status: "allowed" | "blocked";
+}
+
+export function analyzePathAccess(robotsTxt: string | null): PathAccessEntry[] {
+	if (!robotsTxt) return [];
+
+	const entries: PathAccessEntry[] = [];
+	const lines = robotsTxt.split("\n").map((l) => l.trim());
+	let inAiBlock = false;
+
+	for (const line of lines) {
+		const lower = line.toLowerCase();
+		if (lower.startsWith("user-agent:")) {
+			const agent = line.slice(11).trim();
+			inAiBlock = AI_BOTS.some((b) => b.name.toLowerCase() === agent.toLowerCase());
+		} else if (inAiBlock) {
+			if (lower.startsWith("disallow:")) {
+				const path = line.slice(9).trim();
+				if (path && path !== "/") entries.push({ path, status: "blocked" });
+			} else if (lower.startsWith("allow:")) {
+				const path = line.slice(6).trim();
+				if (path) entries.push({ path, status: "allowed" });
+			}
+		}
+	}
+
+	return entries;
+}
+
 // ── Full Evaluation Data ───────────────────────────────────
 
 export interface GeoEvaluationData {
@@ -419,6 +624,14 @@ export interface GeoEvaluationData {
 	}>;
 	/** 블록된 주요 경로 */
 	blocked_paths: string[];
+	/** 허용/차단 경로 상세 */
+	path_access: PathAccessEntry[];
+	/** 잘 된 점 */
+	strengths: Finding[];
+	/** 취약점 */
+	weaknesses: Finding[];
+	/** 기회 */
+	opportunities: Finding[];
 	/** 개선 권고사항 (impact/difficulty/sprint 포함) */
 	improvements: ImprovementRecommendation[];
 }
@@ -648,6 +861,14 @@ export function extractGeoEvaluationData(
 		...new Set(botPolicies.flatMap((b) => b.disallowed_paths)),
 	].filter((p) => p !== "/");
 
+	// 8. Path access analysis
+	const pathAccess = analyzePathAccess(homepage.robots_txt);
+
+	// 9. Strengths / Weaknesses / Opportunities
+	const findings = generateFindings(
+		botPolicies, llmsTxt, schemaCoverage, productInfo, jsDependency, allClaims, dimensions,
+	);
+
 	const baseData = {
 		bot_policies: botPolicies,
 		llms_txt: llmsTxt,
@@ -656,9 +877,13 @@ export function extractGeoEvaluationData(
 		js_dependency: jsDependency,
 		product_info: productInfo,
 		blocked_paths: blockedPaths,
+		path_access: pathAccess,
+		strengths: findings.strengths,
+		weaknesses: findings.weaknesses,
+		opportunities: findings.opportunities,
 	};
 
-	// 8. Generate improvement recommendations
+	// 10. Generate improvement recommendations
 	const improvements = generateImprovements(baseData, dimensions ?? []);
 
 	return {

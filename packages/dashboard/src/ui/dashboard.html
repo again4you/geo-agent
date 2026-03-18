@@ -254,9 +254,14 @@ tr:hover td { background: var(--surface2); }
 	<div id="tab-evaluation" class="hidden">
 		<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:12px;">
 			<h2 style="font-size:18px;">GEO Evaluation Results</h2>
-			<select id="evalTargetSelect" onchange="loadEvaluation()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:8px 12px;border-radius:var(--radius);font-size:13px;">
-				<option value="">Select a target...</option>
-			</select>
+			<div style="display:flex;gap:8px;align-items:center;">
+				<select id="evalTargetSelect" onchange="loadEvaluation()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);padding:8px 12px;border-radius:var(--radius);font-size:13px;min-width:200px;">
+					<option value="">Select a target...</option>
+				</select>
+				<button class="btn btn-primary btn-sm" onclick="loadEvaluation()">Refresh</button>
+			</div>
+		</div>
+		<div id="evalSubTabs" class="hidden" style="display:none;overflow-x:auto;white-space:nowrap;border-bottom:1px solid var(--border);margin-bottom:16px;padding-bottom:0;">
 		</div>
 		<div id="evalContent">
 			<div class="empty">Select a target to view evaluation results.</div>
@@ -620,6 +625,9 @@ async function stopPipeline(targetId) {
 
 // ── Evaluation ───────────────────────────────────────
 let evalInitialized = false;
+let currentEvalData = null;
+let activeEvalSubTab = 'overview';
+
 async function initEvalTab() {
 	const select = document.getElementById('evalTargetSelect');
 	if (!evalInitialized) {
@@ -633,33 +641,50 @@ async function initEvalTab() {
 async function loadEvaluation() {
 	const select = document.getElementById('evalTargetSelect');
 	const container = document.getElementById('evalContent');
+	const subTabsContainer = document.getElementById('evalSubTabs');
 	const targetId = select.value;
 	if (!targetId) {
 		container.innerHTML = '<div class="empty">Select a target to view evaluation results.</div>';
+		subTabsContainer.style.display = 'none';
 		return;
 	}
 	container.innerHTML = '<div class="empty">Loading evaluation...</div>';
+	subTabsContainer.style.display = 'none';
+
 	try {
-		const latest = await api('/api/targets/' + targetId + '/pipeline/latest');
+		// Get ALL pipelines for this target, find the newest one
+		const pipelines = await api('/api/targets/' + targetId + '/pipeline');
+		if (!pipelines || pipelines.length === 0) {
+			container.innerHTML = '<div class="empty">No pipeline found. Run a pipeline first.</div>';
+			return;
+		}
+		// Sort by started_at descending to get newest
+		pipelines.sort(function(a, b) { return new Date(b.started_at) - new Date(a.started_at); });
+		const latest = pipelines[0];
 		const isTerminal = ['COMPLETED', 'FAILED', 'PARTIAL_FAILURE'].includes(latest.stage);
 
 		// Show pipeline status header
-		let statusHtml = '<div class="card" style="padding:12px 16px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">';
+		var statusHtml = '<div class="card" style="padding:12px 16px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">';
 		statusHtml += '<div style="font-size:12px;color:var(--text-muted);">Pipeline: <code>' + latest.pipeline_id.slice(0, 8) + '...</code> · Started: ' + new Date(latest.started_at).toLocaleString() + '</div>';
 		statusHtml += '<div style="display:flex;gap:8px;align-items:center;">';
 		statusHtml += '<span class="stage-badge stage-' + latest.stage + '">' + latest.stage + '</span>';
 		if (!isTerminal) {
-			statusHtml += '<span style="font-size:12px;color:var(--warning);animation:stagePulse 1.5s infinite;">⏳ Pipeline still running — reload for latest results</span>';
+			statusHtml += '<span style="font-size:12px;color:var(--warning);animation:stagePulse 1.5s infinite;">⏳ Pipeline still running — click Refresh for latest results</span>';
 		}
-		statusHtml += '<button class="btn btn-primary btn-sm" onclick="loadEvaluation()" style="font-size:11px;">🔄 Refresh</button>';
 		statusHtml += '</div></div>';
 
 		try {
-			const evalData = await api('/api/targets/' + targetId + '/pipeline/' + latest.pipeline_id + '/evaluation');
+			var evalData = await api('/api/targets/' + targetId + '/pipeline/' + latest.pipeline_id + '/evaluation');
+			currentEvalData = evalData;
+			// Build sub-tabs
+			buildEvalSubTabs(evalData);
+			subTabsContainer.style.display = 'flex';
+			// Render active sub-tab
 			container.innerHTML = statusHtml;
-			const evalDiv = document.createElement('div');
+			var evalDiv = document.createElement('div');
+			evalDiv.id = 'evalSubContent';
 			container.appendChild(evalDiv);
-			renderEvaluation(evalData, evalDiv);
+			renderEvalSubTab(activeEvalSubTab, evalData, evalDiv);
 		} catch (e2) {
 			if (!isTerminal) {
 				container.innerHTML = statusHtml + '<div class="empty">Pipeline is running (' + latest.stage + '). Evaluation data will be available after ANALYZING stage completes. Click Refresh to check.</div>';
@@ -672,6 +697,37 @@ async function loadEvaluation() {
 	}
 }
 
+function buildEvalSubTabs(data) {
+	var tabs = [
+		{ id: 'overview', icon: '📊', label: '종합 개요' },
+		{ id: 'crawlability', icon: '🤖', label: '크롤링 접근성' },
+		{ id: 'structure', icon: '🏗️', label: '구조화 데이터' },
+		{ id: 'products', icon: '📦', label: '제품 정보 인식' },
+		{ id: 'brand', icon: '💬', label: '브랜드 메시지' },
+		{ id: 'pages', icon: '🔍', label: '페이지별 분석' },
+		{ id: 'recommendations', icon: '🎯', label: '개선 권고' },
+		{ id: 'evidence', icon: '🔬', label: '실증 데이터' },
+		{ id: 'roadmap', icon: '🗺️', label: '개선 로드맵' },
+		{ id: 'pipeline', icon: '⏱️', label: '실행 요약' },
+	];
+	var html = '';
+	for (var i = 0; i < tabs.length; i++) {
+		var t = tabs[i];
+		var active = t.id === activeEvalSubTab ? 'color:var(--primary);border-bottom:2px solid var(--primary);' : 'color:var(--text-muted);border-bottom:2px solid transparent;';
+		html += '<button onclick="switchEvalSubTab(\'' + t.id + '\')" style="background:none;border:none;cursor:pointer;padding:10px 16px;font-size:13px;white-space:nowrap;transition:all 0.2s;' + active + '">' + t.icon + ' ' + t.label + '</button>';
+	}
+	document.getElementById('evalSubTabs').innerHTML = html;
+}
+
+function switchEvalSubTab(tabId) {
+	activeEvalSubTab = tabId;
+	if (currentEvalData) {
+		buildEvalSubTabs(currentEvalData);
+		var target = document.getElementById('evalSubContent');
+		if (target) renderEvalSubTab(tabId, currentEvalData, target);
+	}
+}
+
 function scoreColor(score) {
 	if (score >= 75) return 'var(--success)';
 	if (score >= 55) return 'var(--warning)';
@@ -679,17 +735,90 @@ function scoreColor(score) {
 }
 
 function deltaBadge(delta) {
-	const cls = delta > 0 ? 'delta-positive' : delta < 0 ? 'delta-negative' : 'delta-zero';
-	const sign = delta > 0 ? '+' : '';
+	var cls = delta > 0 ? 'delta-positive' : delta < 0 ? 'delta-negative' : 'delta-zero';
+	var sign = delta > 0 ? '+' : '';
 	return '<span class="delta-badge ' + cls + '">' + sign + delta.toFixed(1) + '</span>';
 }
 
-function renderEvaluation(data, container) {
-	let html = '';
+function findingCard(icon, title, desc) {
+	return '<div style="padding:12px;margin-bottom:8px;background:var(--surface2);border-radius:6px;display:flex;gap:10px;">' +
+		'<span style="font-size:18px;flex-shrink:0;">' + icon + '</span>' +
+		'<div><h4 style="font-size:13px;font-weight:700;margin-bottom:4px;">' + esc(title) + '</h4>' +
+		'<p style="font-size:12px;color:var(--text-muted);line-height:1.5;">' + esc(desc) + '</p></div></div>';
+}
 
-	// ── Score Overview ──────────────────────────────────────
-	const color = scoreColor(data.initial_score);
-	const fColor = data.delta !== 0 ? scoreColor(data.final_score) : color;
+function renderSprintGroup(label, color, items) {
+	if (items.length === 0) return '';
+	var h = '<div style="margin-bottom:16px;">';
+	h += '<div style="font-size:11px;font-weight:700;color:' + color + ';text-transform:uppercase;letter-spacing:0.7px;margin-bottom:8px;">' + label + '</div>';
+	for (var i = 0; i < items.length; i++) {
+		var r = items[i];
+		var impactBars = '';
+		for (var j = 0; j < 5; j++) impactBars += j < r.impact ? '★' : '☆';
+		var diffLabel = r.difficulty <= 1 ? 'Easy' : r.difficulty <= 2 ? 'Medium' : r.difficulty <= 3 ? 'Hard' : 'Very Hard';
+		var diffColor = r.difficulty <= 1 ? 'var(--success)' : r.difficulty <= 2 ? 'var(--warning)' : 'var(--danger)';
+		h += '<div style="padding:10px 14px;margin-bottom:8px;background:var(--surface2);border-radius:6px;border-left:3px solid ' + (r.impact >= 4 ? 'var(--danger)' : r.impact >= 3 ? 'var(--warning)' : 'var(--success)') + ';">';
+		h += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px;">';
+		h += '<strong style="font-size:13px;">' + esc(r.id) + ' ' + esc(r.title) + '</strong>';
+		h += '<div style="display:flex;gap:8px;align-items:center;font-size:11px;">';
+		h += '<span style="color:var(--warning);">' + impactBars + '</span>';
+		h += '<span style="color:' + diffColor + ';font-weight:600;">' + diffLabel + '</span>';
+		h += '</div></div>';
+		h += '<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">' + esc(r.description) + '</div>';
+		h += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">현재: ' + esc(r.current_state) + ' · 영향: ' + r.affected_dimensions.join(', ') + '</div>';
+		h += '</div>';
+	}
+	h += '</div>';
+	return h;
+}
+
+function renderEvalSubTab(tabId, data, container) {
+	var ed = data.eval_data || {};
+	var html = '';
+	switch (tabId) {
+	case 'overview':
+		html = renderOverviewTab(data, ed);
+		break;
+	case 'crawlability':
+		html = renderCrawlabilityTab(ed);
+		break;
+	case 'structure':
+		html = renderStructureTab(ed);
+		break;
+	case 'products':
+		html = renderProductsTab(ed);
+		break;
+	case 'brand':
+		html = renderBrandTab(ed);
+		break;
+	case 'pages':
+		html = renderPagesTab(data);
+		break;
+	case 'recommendations':
+		html = renderRecommendationsTab(ed);
+		break;
+	case 'evidence':
+		html = renderEvidenceTab(ed);
+		break;
+	case 'roadmap':
+		html = renderRoadmapTab(ed);
+		break;
+	case 'pipeline':
+		html = renderPipelineTab(data);
+		break;
+	default:
+		html = '<div class="empty">Unknown tab</div>';
+	}
+	container.innerHTML = html;
+}
+
+// ── Tab 1: Overview ──────────────────────────────────
+function renderOverviewTab(data, ed) {
+	var html = '';
+	var color = scoreColor(data.initial_score);
+	var fColor = data.delta !== 0 ? scoreColor(data.final_score) : color;
+
+	// Score display
 	html += '<div class="card eval-score-card">';
 	html += '<div class="score-circle" style="background:conic-gradient(' + color + ' 0% ' + data.initial_score + '%, var(--border) ' + data.initial_score + '%);">';
 	html += '<span style="color:' + color + ';">' + Math.round(data.initial_score) + '</span></div>';
@@ -707,182 +836,419 @@ function renderEvaluation(data, container) {
 	}
 	html += '</div>';
 
-	// ── 7-Dimension Scores ──────────────────────────────────
+	// 7-Dimension Scores
 	if (data.dimensions && data.dimensions.length > 0) {
-		html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">📈 7-Dimension GEO Scores</h3>';
-		for (const d of data.dimensions) {
-			const c = scoreColor(d.score);
+		html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">';
+		html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">📈 GEO 차원별 점수</h3>';
+		for (var i = 0; i < data.dimensions.length; i++) {
+			var d = data.dimensions[i];
+			var c = scoreColor(d.score);
 			html += '<div class="eval-dim-bar"><div class="bar-header"><span>' + esc(d.id + ' ' + d.label) + '</span><span style="color:' + c + ';font-weight:600;">' + d.score.toFixed(1) + '</span></div>';
 			html += '<div class="bar-track"><div class="bar-fill" style="width:' + d.score + '%;background:' + c + ';"></div></div></div>';
 		}
 		html += '</div>';
+
+		// Score summary cards (dimension highlights)
+		html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">📊 핵심 차원 요약</h3>';
+		html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">';
+		for (var i = 0; i < Math.min(data.dimensions.length, 4); i++) {
+			var d = data.dimensions[i];
+			var c = scoreColor(d.score);
+			var cls = d.score >= 75 ? 'rgba(16,185,129,0.1)' : d.score >= 55 ? 'rgba(245,158,11,0.1)' : 'rgba(239,68,68,0.1)';
+			html += '<div style="padding:12px;background:' + cls + ';border-radius:6px;text-align:center;">';
+			html += '<div style="font-size:24px;font-weight:800;color:' + c + ';">' + Math.round(d.score) + '</div>';
+			html += '<div style="font-size:11px;color:var(--text-muted);margin-top:2px;">' + esc(d.label) + '</div></div>';
+		}
+		html += '</div></div></div>';
 	}
 
-	// ── eval_data sections (detailed GEO evaluation) ────────
-	const ed = data.eval_data;
-	if (ed) {
-		// ── Crawlability: Bot Policy Table ──────────────────
-		if (ed.bot_policies && ed.bot_policies.length > 0) {
-			html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">🤖 AI Bot Access Policy (robots.txt)</h3>';
-			html += '<div style="overflow-x:auto;"><table class="eval-page-table"><thead><tr><th>Bot</th><th>Service</th><th>Status</th><th>Blocked Paths</th></tr></thead><tbody>';
-			for (const bot of ed.bot_policies) {
-				const statusStyle = bot.status === 'allowed' ? 'color:var(--success)' : bot.status === 'blocked' ? 'color:var(--danger)' : bot.status === 'partial' ? 'color:var(--warning)' : 'color:var(--text-muted)';
-				const statusLabel = bot.status === 'allowed' ? '✅ Allowed' : bot.status === 'blocked' ? '🚫 Blocked' : bot.status === 'partial' ? '⚠️ Partial' : 'ℹ️ Not specified';
-				html += '<tr><td><code>' + esc(bot.bot_name) + '</code></td><td>' + esc(bot.service) + '</td>';
-				html += '<td style="' + statusStyle + ';font-weight:600;">' + statusLabel + '</td>';
-				html += '<td style="font-size:11px;color:var(--text-muted);">' + (bot.disallowed_paths.length > 0 ? esc(bot.disallowed_paths.slice(0, 3).join(', ')) : '-') + '</td></tr>';
+	// Strengths / Weaknesses / Opportunities
+	if (ed.strengths || ed.weaknesses || ed.opportunities) {
+		html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;">';
+		// Strengths
+		html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">✅ 잘 된 점 (Strengths)</h3>';
+		if (ed.strengths && ed.strengths.length > 0) {
+			for (var i = 0; i < ed.strengths.length; i++) {
+				html += findingCard(ed.strengths[i].icon, ed.strengths[i].title, ed.strengths[i].description);
 			}
-			html += '</tbody></table></div>';
-
-			// llms.txt status
-			html += '<div style="margin-top:12px;padding:10px 14px;border-radius:6px;border:1px solid ' + (ed.llms_txt.exists ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)') + ';background:' + (ed.llms_txt.exists ? 'rgba(16,185,129,0.05)' : 'rgba(239,68,68,0.05)') + ';">';
-			html += '<span style="font-weight:700;color:' + (ed.llms_txt.exists ? 'var(--success)' : 'var(--danger)') + ';">' + (ed.llms_txt.exists ? '✅ llms.txt exists' : '❌ llms.txt not found (HTTP 404)') + '</span>';
-			if (ed.llms_txt.content_preview) html += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;font-family:monospace;white-space:pre-wrap;max-height:60px;overflow:hidden;">' + esc(ed.llms_txt.content_preview.slice(0, 200)) + '</div>';
-			html += '</div></div>';
+		} else {
+			html += '<div class="empty" style="font-size:12px;">분석 완료 후 표시</div>';
 		}
-
-		// ── Schema Coverage Matrix ──────────────────────────
-		if (ed.schema_coverage && ed.schema_coverage.length > 0) {
-			html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">🏗️ Schema.org Coverage Matrix</h3>';
-			html += '<div style="overflow-x:auto;"><table class="eval-page-table"><thead><tr><th>Schema Type</th><th>Present</th><th>Quality</th><th>Details</th></tr></thead><tbody>';
-			for (const sc of ed.schema_coverage) {
-				const qColor = sc.quality === 'excellent' ? 'var(--success)' : sc.quality === 'good' ? 'var(--success)' : sc.quality === 'partial' ? 'var(--warning)' : 'var(--danger)';
-				const icon = sc.present ? '✅' : '❌';
-				html += '<tr><td><strong>' + esc(sc.schema_type) + '</strong></td>';
-				html += '<td>' + icon + '</td>';
-				html += '<td style="color:' + qColor + ';font-weight:600;text-transform:capitalize;">' + esc(sc.quality) + '</td>';
-				html += '<td style="font-size:12px;color:var(--text-muted);">' + esc(sc.details) + '</td></tr>';
+		html += '</div>';
+		// Weaknesses
+		html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">⚠️ 취약점 (Weaknesses)</h3>';
+		if (ed.weaknesses && ed.weaknesses.length > 0) {
+			for (var i = 0; i < ed.weaknesses.length; i++) {
+				html += findingCard(ed.weaknesses[i].icon, ed.weaknesses[i].title, ed.weaknesses[i].description);
 			}
-			html += '</tbody></table></div></div>';
+		} else {
+			html += '<div class="empty" style="font-size:12px;">분석 완료 후 표시</div>';
 		}
-
-		// ── Product Info Per Page ────────────────────────────
-		if (ed.product_info && ed.product_info.length > 0) {
-			const hasProducts = ed.product_info.some(function(p) { return p.info.product_name || p.info.prices.length > 0 || p.info.specs_in_schema.length > 0; });
-			if (hasProducts) {
-				html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">📦 Product Information Extracted</h3>';
-				for (const pi of ed.product_info) {
-					if (!pi.info.product_name && pi.info.prices.length === 0 && pi.info.specs_in_schema.length === 0 && pi.info.specs_in_html.length === 0) continue;
-					html += '<div style="padding:10px 0;border-bottom:1px solid rgba(55,65,81,0.3);">';
-					html += '<div style="font-size:12px;color:var(--primary);font-family:monospace;">' + esc(pi.page_url.length > 70 ? '...' + pi.page_url.slice(-65) : pi.page_url) + '</div>';
-					if (pi.info.product_name) html += '<div style="font-weight:700;margin-top:4px;">' + esc(pi.info.product_name) + '</div>';
-					if (pi.info.prices.length > 0) html += '<div style="font-size:12px;color:var(--success);margin-top:2px;">💰 ' + esc(pi.info.prices.slice(0, 5).join(' · ')) + '</div>';
-					if (pi.info.has_aggregate_rating) html += '<div style="font-size:12px;color:var(--warning);margin-top:2px;">⭐ ' + esc(pi.info.rating_value || '') + ' (' + esc(pi.info.review_count || '0') + ' reviews)</div>';
-					if (pi.info.specs_in_schema.length > 0) html += '<div style="font-size:12px;color:var(--success);margin-top:2px;">📐 Schema specs: ' + esc(pi.info.specs_in_schema.slice(0, 5).join(', ')) + '</div>';
-					if (pi.info.specs_in_html.length > 0) html += '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">📄 HTML specs: ' + esc(pi.info.specs_in_html.slice(0, 5).join(', ')) + '</div>';
-					html += '</div>';
-				}
-				html += '</div>';
+		html += '</div>';
+		// Opportunities
+		html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">🚀 핵심 기회 (Opportunities)</h3>';
+		if (ed.opportunities && ed.opportunities.length > 0) {
+			for (var i = 0; i < ed.opportunities.length; i++) {
+				html += findingCard(ed.opportunities[i].icon, ed.opportunities[i].title, ed.opportunities[i].description);
 			}
+		} else {
+			html += '<div class="empty" style="font-size:12px;">분석 완료 후 표시</div>';
 		}
-
-		// ── Marketing Claims ────────────────────────────────
-		if (ed.marketing_claims && ed.marketing_claims.length > 0) {
-			html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">💬 Marketing Claims & Verifiability</h3>';
-			html += '<div style="overflow-x:auto;"><table class="eval-page-table"><thead><tr><th>Claim</th><th>Source?</th><th>Verifiability</th></tr></thead><tbody>';
-			for (const cl of ed.marketing_claims) {
-				const vColor = cl.verifiability === 'verifiable' || cl.verifiability === 'factual' ? 'var(--success)' : cl.verifiability === 'partial' ? 'var(--warning)' : 'var(--danger)';
-				html += '<tr><td style="font-size:12px;max-width:400px;">' + esc(cl.text) + '</td>';
-				html += '<td>' + (cl.has_source ? '✅' : '❌') + '</td>';
-				html += '<td style="color:' + vColor + ';font-weight:600;text-transform:capitalize;">' + esc(cl.verifiability) + '</td></tr>';
-			}
-			html += '</tbody></table></div></div>';
-		}
-
-		// ── JS Dependency ───────────────────────────────────
-		if (ed.js_dependency) {
-			const jd = ed.js_dependency;
-			const depColor = jd.estimated_js_dependency > 0.6 ? 'var(--danger)' : jd.estimated_js_dependency > 0.3 ? 'var(--warning)' : 'var(--success)';
-			html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">⚙️ JavaScript Dependency Analysis</h3>';
-			html += '<div style="display:flex;gap:16px;flex-wrap:wrap;">';
-			html += '<div style="flex:1;min-width:150px;padding:12px;background:var(--surface2);border-radius:6px;text-align:center;"><div style="font-size:24px;font-weight:800;">' + jd.script_count + '</div><div style="font-size:11px;color:var(--text-muted);">Total Scripts</div></div>';
-			html += '<div style="flex:1;min-width:150px;padding:12px;background:var(--surface2);border-radius:6px;text-align:center;"><div style="font-size:24px;font-weight:800;">' + jd.external_scripts + '</div><div style="font-size:11px;color:var(--text-muted);">External</div></div>';
-			html += '<div style="flex:1;min-width:150px;padding:12px;background:var(--surface2);border-radius:6px;text-align:center;"><div style="font-size:24px;font-weight:800;color:' + depColor + ';">' + Math.round(jd.estimated_js_dependency * 100) + '%</div><div style="font-size:11px;color:var(--text-muted);">JS Dependency Est.</div></div>';
-			html += '</div>';
-			if (jd.frameworks_detected.length > 0) html += '<div style="margin-top:8px;font-size:12px;color:var(--text-muted);">Frameworks: ' + esc(jd.frameworks_detected.join(', ')) + '</div>';
-			html += '</div>';
-		}
-
-		// ── Blocked Paths ───────────────────────────────────
-		if (ed.blocked_paths && ed.blocked_paths.length > 0) {
-			html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">🚫 Blocked Paths (AI Bots)</h3>';
-			html += '<div style="display:flex;flex-wrap:wrap;gap:6px;">';
-			for (const path of ed.blocked_paths.slice(0, 15)) {
-				html += '<span style="font-family:monospace;font-size:11px;padding:3px 8px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.2);border-radius:4px;color:var(--danger);">' + esc(path) + '</span>';
-			}
-			html += '</div></div>';
-		}
-
-		// ── Improvement Roadmap ─────────────────────────────
-		if (ed.improvements && ed.improvements.length > 0) {
-			html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">🎯 Improvement Roadmap (' + ed.improvements.length + ' recommendations)</h3>';
-
-			// Group by sprint
-			var sprint1 = ed.improvements.filter(function(r) { return r.sprint === 1; });
-			var sprint2 = ed.improvements.filter(function(r) { return r.sprint === 2; });
-			var sprint3 = ed.improvements.filter(function(r) { return r.sprint === 3; });
-
-			function renderSprintGroup(label, color, items) {
-				if (items.length === 0) return '';
-				var h = '<div style="margin-bottom:16px;">';
-				h += '<div style="font-size:11px;font-weight:700;color:' + color + ';text-transform:uppercase;letter-spacing:0.7px;margin-bottom:8px;">' + label + '</div>';
-				for (var i = 0; i < items.length; i++) {
-					var r = items[i];
-					var impactBars = '';
-					for (var j = 0; j < 5; j++) impactBars += j < r.impact ? '★' : '☆';
-					var diffLabel = r.difficulty <= 1 ? 'Easy' : r.difficulty <= 2 ? 'Medium' : r.difficulty <= 3 ? 'Hard' : 'Very Hard';
-					var diffColor = r.difficulty <= 1 ? 'var(--success)' : r.difficulty <= 2 ? 'var(--warning)' : 'var(--danger)';
-					h += '<div style="padding:10px 14px;margin-bottom:8px;background:var(--surface2);border-radius:6px;border-left:3px solid ' + (r.impact >= 4 ? 'var(--danger)' : r.impact >= 3 ? 'var(--warning)' : 'var(--success)') + ';">';
-					h += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px;">';
-					h += '<strong style="font-size:13px;">' + esc(r.id) + ' ' + esc(r.title) + '</strong>';
-					h += '<div style="display:flex;gap:8px;align-items:center;font-size:11px;">';
-					h += '<span style="color:var(--warning);">' + impactBars + '</span>';
-					h += '<span style="color:' + diffColor + ';font-weight:600;">' + diffLabel + '</span>';
-					h += '</div></div>';
-					h += '<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">' + esc(r.description) + '</div>';
-					h += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">현재: ' + esc(r.current_state) + ' · 영향: ' + r.affected_dimensions.join(', ') + '</div>';
-					h += '</div>';
-				}
-				h += '</div>';
-				return h;
-			}
-
-			html += renderSprintGroup('🔴 Sprint 1 — 즉시 실행 (1~2주)', 'var(--danger)', sprint1);
-			html += renderSprintGroup('🟡 Sprint 2 — 1~3개월', 'var(--warning)', sprint2);
-			html += renderSprintGroup('🟢 Sprint 3 — 분기 내', 'var(--success)', sprint3);
-			html += '</div>';
-		}
+		html += '</div></div>';
 	}
 
-	// ── Multi-page breakdown ────────────────────────────────
-	if (data.multi_page && data.multi_page.pages && data.multi_page.pages.length > 0) {
-		html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">🔍 Per-Page GEO Scores (' + data.multi_page.page_count + ' pages, aggregate: ' + data.multi_page.aggregate_score + ')</h3>';
-		html += '<div style="overflow-x:auto;"><table class="eval-page-table"><thead><tr><th>Page</th><th>Score</th><th>Grade</th></tr></thead><tbody>';
-		for (const p of data.multi_page.pages) {
-			const pc = scoreColor(p.score);
-			const urlShort = p.url ? (p.url.length > 60 ? '...' + p.url.slice(-55) : p.url) : p.filename;
-			html += '<tr><td style="font-family:monospace;font-size:12px;">' + esc(urlShort) + '</td>';
-			html += '<td style="font-weight:700;color:' + pc + ';">' + p.score.toFixed(1) + '</td>';
-			html += '<td>' + esc(p.grade) + '</td></tr>';
+	return html;
+}
+
+// ── Tab 2: Crawlability ──────────────────────────────
+function renderCrawlabilityTab(ed) {
+	var html = '';
+	if (!ed.bot_policies) return '<div class="empty">No crawlability data available.</div>';
+
+	html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">';
+
+	// Bot policy table
+	html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">🤖 robots.txt AI 봇 정책</h3>';
+	html += '<div style="overflow-x:auto;"><table class="eval-page-table"><thead><tr><th>AI 봇 (User-Agent)</th><th>서비스</th><th>허용 상태</th><th>비고</th></tr></thead><tbody>';
+	for (var i = 0; i < ed.bot_policies.length; i++) {
+		var bot = ed.bot_policies[i];
+		var statusStyle = bot.status === 'allowed' ? 'color:var(--success)' : bot.status === 'blocked' ? 'color:var(--danger)' : bot.status === 'partial' ? 'color:var(--warning)' : 'color:var(--text-muted)';
+		var statusLabel = bot.status === 'allowed' ? '✅ 허용' : bot.status === 'blocked' ? '🚫 차단' : bot.status === 'partial' ? '⚠️ 부분 허용' : 'ℹ️ 미명시';
+		html += '<tr><td><code>' + esc(bot.bot_name) + '</code></td><td>' + esc(bot.service) + '</td>';
+		html += '<td style="' + statusStyle + ';font-weight:600;">' + statusLabel + '</td>';
+		html += '<td style="font-size:11px;color:var(--text-muted);">' + (bot.disallowed_paths.length > 0 ? esc(bot.disallowed_paths.slice(0, 3).join(', ')) : '기본 크롤러 규칙 적용') + '</td></tr>';
+	}
+	html += '</tbody></table></div></div>';
+
+	// Blocked paths detail
+	html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">🚫 AI 봇에 차단된 주요 경로</h3>';
+	if (ed.blocked_paths && ed.blocked_paths.length > 0) {
+		for (var i = 0; i < Math.min(ed.blocked_paths.length, 8); i++) {
+			html += findingCard('🚫', ed.blocked_paths[i], '이 경로가 AI 봇에 차단되어 있어 LLM이 해당 콘텐츠에 접근할 수 없습니다.');
+		}
+	} else {
+		html += '<div class="empty" style="font-size:12px;">차단된 경로 없음</div>';
+	}
+	html += '</div></div>';
+
+	// llms.txt status (full width)
+	html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">📋 llms.txt 현황</h3>';
+	html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">';
+	var llmsColor = ed.llms_txt && ed.llms_txt.exists ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)';
+	var llmsBg = ed.llms_txt && ed.llms_txt.exists ? 'rgba(16,185,129,0.05)' : 'rgba(239,68,68,0.05)';
+	html += '<div style="padding:16px;background:var(--surface2);border-radius:8px;border:1px solid ' + llmsColor + ';">';
+	html += '<div style="font-size:24px;margin-bottom:8px;">' + (ed.llms_txt && ed.llms_txt.exists ? '✅' : '❌') + '</div>';
+	html += '<div style="font-weight:700;color:' + (ed.llms_txt && ed.llms_txt.exists ? 'var(--success)' : 'var(--danger)') + ';margin-bottom:6px;">llms.txt</div>';
+	html += '<div style="font-size:12px;color:var(--text-muted);line-height:1.5;">' + (ed.llms_txt && ed.llms_txt.exists ? 'llms.txt 파일 존재. LLM에게 사이트 정보 제공 중.' : 'llms.txt 미존재 (HTTP 404). LLM에게 사이트 구조를 안내하지 못함.') + '</div></div>';
+
+	var partialBots = ed.bot_policies ? ed.bot_policies.filter(function(b) { return b.status === 'allowed' || b.status === 'partial'; }).length : 0;
+	html += '<div style="padding:16px;background:var(--surface2);border-radius:8px;border:1px solid rgba(16,185,129,0.3);">';
+	html += '<div style="font-size:24px;margin-bottom:8px;">ℹ️</div>';
+	html += '<div style="font-weight:700;color:var(--success);margin-bottom:6px;">robots.txt AI 봇 대응</div>';
+	html += '<div style="font-size:12px;color:var(--text-muted);line-height:1.5;">' + partialBots + '개 AI 봇에 대해 명시적 정책 등록. 최소한의 AI 봇 관리 정책 수립.</div></div>';
+
+	var unspecBots = ed.bot_policies ? ed.bot_policies.filter(function(b) { return b.status === 'not_specified'; }) : [];
+	if (unspecBots.length > 0) {
+		html += '<div style="padding:16px;background:var(--surface2);border-radius:8px;border:1px solid rgba(245,158,11,0.3);">';
+		html += '<div style="font-size:24px;margin-bottom:8px;">⚠️</div>';
+		html += '<div style="font-weight:700;color:var(--warning);margin-bottom:6px;">미명시 봇 ' + unspecBots.length + '개</div>';
+		html += '<div style="font-size:12px;color:var(--text-muted);line-height:1.5;">' + unspecBots.map(function(b) { return b.bot_name; }).join(', ') + ' 추가 권장.</div></div>';
+	}
+	html += '</div>';
+
+	if (ed.llms_txt && ed.llms_txt.content_preview) {
+		html += '<div style="margin-top:12px;padding:12px;background:var(--surface2);border-radius:6px;font-family:monospace;font-size:11px;white-space:pre-wrap;max-height:150px;overflow:auto;color:var(--text-muted);">' + esc(ed.llms_txt.content_preview) + '</div>';
+	}
+	html += '</div>';
+	return html;
+}
+
+// ── Tab 3: Structure ─────────────────────────────────
+function renderStructureTab(ed) {
+	var html = '';
+	if (!ed.schema_coverage) return '<div class="empty">No structure data available.</div>';
+
+	html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">';
+
+	// Schema coverage table
+	html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">🏗️ 스키마 타입별 구현 현황</h3>';
+	html += '<div style="overflow-x:auto;"><table class="eval-page-table"><thead><tr><th>Schema Type</th><th>구현</th><th>품질</th><th>상세</th></tr></thead><tbody>';
+	for (var i = 0; i < ed.schema_coverage.length; i++) {
+		var sc = ed.schema_coverage[i];
+		var qColor = sc.quality === 'excellent' ? 'var(--success)' : sc.quality === 'good' ? 'var(--success)' : sc.quality === 'partial' ? 'var(--warning)' : 'var(--danger)';
+		var icon = sc.present ? '✅' : '❌';
+		var qLabel = sc.quality === 'excellent' ? '우수' : sc.quality === 'good' ? '양호' : sc.quality === 'partial' ? '부분' : '없음';
+		html += '<tr><td><strong>' + esc(sc.schema_type) + '</strong></td>';
+		html += '<td>' + icon + '</td>';
+		html += '<td style="color:' + qColor + ';font-weight:600;">' + qLabel + '</td>';
+		html += '<td style="font-size:12px;color:var(--text-muted);">' + esc(sc.details) + '</td></tr>';
+	}
+	html += '</tbody></table></div></div>';
+
+	// Schema implementation summary
+	var present = ed.schema_coverage.filter(function(s) { return s.present; }).length;
+	var total = ed.schema_coverage.length;
+	var pct = Math.round(present / total * 100);
+	html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">📊 구조화 데이터 요약</h3>';
+	html += '<div style="text-align:center;padding:20px;"><div style="font-size:48px;font-weight:800;color:' + scoreColor(pct) + ';">' + present + '/' + total + '</div>';
+	html += '<div style="font-size:13px;color:var(--text-muted);">스키마 타입 구현 (' + pct + '%)</div></div>';
+
+	// List missing critical schemas
+	var missing = ed.schema_coverage.filter(function(s) { return !s.present; });
+	if (missing.length > 0) {
+		html += '<h3 style="font-size:13px;color:var(--danger);margin:12px 0 8px;">❌ 미구현 스키마</h3>';
+		for (var i = 0; i < missing.length; i++) {
+			html += '<div style="padding:6px 0;font-size:12px;border-bottom:1px solid rgba(55,65,81,0.3);"><code>' + esc(missing[i].schema_type) + '</code></div>';
+		}
+	}
+	html += '</div></div>';
+
+	// JS dependency
+	if (ed.js_dependency) {
+		var jd = ed.js_dependency;
+		var depColor = jd.estimated_js_dependency > 0.6 ? 'var(--danger)' : jd.estimated_js_dependency > 0.3 ? 'var(--warning)' : 'var(--success)';
+		html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">⚙️ JavaScript 의존성 분석</h3>';
+		html += '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">';
+		html += '<div style="padding:12px;background:var(--surface2);border-radius:6px;text-align:center;"><div style="font-size:24px;font-weight:800;">' + jd.script_count + '</div><div style="font-size:11px;color:var(--text-muted);">총 스크립트</div></div>';
+		html += '<div style="padding:12px;background:var(--surface2);border-radius:6px;text-align:center;"><div style="font-size:24px;font-weight:800;">' + jd.external_scripts + '</div><div style="font-size:11px;color:var(--text-muted);">외부 스크립트</div></div>';
+		html += '<div style="padding:12px;background:var(--surface2);border-radius:6px;text-align:center;"><div style="font-size:24px;font-weight:800;">' + jd.inline_scripts + '</div><div style="font-size:11px;color:var(--text-muted);">인라인 스크립트</div></div>';
+		html += '<div style="padding:12px;background:var(--surface2);border-radius:6px;text-align:center;"><div style="font-size:24px;font-weight:800;color:' + depColor + ';">' + Math.round(jd.estimated_js_dependency * 100) + '%</div><div style="font-size:11px;color:var(--text-muted);">JS 의존도</div></div>';
+		html += '</div>';
+		if (jd.frameworks_detected.length > 0) html += '<div style="margin-top:10px;font-size:12px;color:var(--text-muted);">감지된 프레임워크: ' + esc(jd.frameworks_detected.join(', ')) + '</div>';
+		html += '</div>';
+	}
+
+	return html;
+}
+
+// ── Tab 4: Products ──────────────────────────────────
+function renderProductsTab(ed) {
+	var html = '';
+	if (!ed.product_info || ed.product_info.length === 0) return '<div class="empty">No product information extracted.</div>';
+
+	var hasProducts = ed.product_info.some(function(p) { return p.info.product_name || p.info.prices.length > 0 || p.info.specs_in_schema.length > 0; });
+	if (!hasProducts) return '<div class="empty">No product data found on crawled pages. The site may rely on JavaScript rendering for product information.</div>';
+
+	html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">📦 제품 정보 인식 분석 (페이지별)</h3>';
+	for (var i = 0; i < ed.product_info.length; i++) {
+		var pi = ed.product_info[i];
+		if (!pi.info.product_name && pi.info.prices.length === 0 && pi.info.specs_in_schema.length === 0 && pi.info.specs_in_html.length === 0) continue;
+
+		html += '<div style="padding:14px;margin-bottom:12px;background:var(--surface2);border-radius:8px;">';
+		html += '<div style="font-size:12px;color:var(--primary);font-family:monospace;margin-bottom:8px;">' + esc(pi.page_url.length > 80 ? '...' + pi.page_url.slice(-75) : pi.page_url) + '</div>';
+
+		if (pi.info.product_name) html += '<div style="font-size:15px;font-weight:700;margin-bottom:6px;">' + esc(pi.info.product_name) + '</div>';
+
+		html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">';
+
+		// Price info
+		html += '<div style="padding:10px;background:var(--bg);border-radius:6px;"><div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">💰 가격</div>';
+		if (pi.info.prices.length > 0) {
+			html += '<div style="font-size:13px;color:var(--success);font-weight:600;">' + esc(pi.info.prices.slice(0, 3).join(' · ')) + '</div>';
+		} else {
+			html += '<div style="font-size:12px;color:var(--danger);">가격 데이터 없음</div>';
+		}
+		html += '</div>';
+
+		// Rating
+		html += '<div style="padding:10px;background:var(--bg);border-radius:6px;"><div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">⭐ 평점</div>';
+		if (pi.info.has_aggregate_rating) {
+			html += '<div style="font-size:13px;color:var(--warning);font-weight:600;">' + esc(pi.info.rating_value || 'N/A') + ' (' + esc(pi.info.review_count || '0') + ' reviews)</div>';
+		} else {
+			html += '<div style="font-size:12px;color:var(--danger);">AggregateRating 없음</div>';
+		}
+		html += '</div>';
+
+		// Schema specs
+		html += '<div style="padding:10px;background:var(--bg);border-radius:6px;"><div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">📐 Schema 스펙</div>';
+		if (pi.info.specs_in_schema.length > 0) {
+			html += '<div style="font-size:12px;color:var(--success);">' + esc(pi.info.specs_in_schema.slice(0, 5).join(', ')) + '</div>';
+		} else {
+			html += '<div style="font-size:12px;color:var(--danger);">additionalProperty 없음</div>';
+		}
+		html += '</div>';
+
+		// HTML specs
+		html += '<div style="padding:10px;background:var(--bg);border-radius:6px;"><div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">📄 HTML 정적 스펙</div>';
+		if (pi.info.specs_in_html.length > 0) {
+			html += '<div style="font-size:12px;color:var(--text-muted);">' + esc(pi.info.specs_in_html.slice(0, 5).join(', ')) + '</div>';
+		} else {
+			html += '<div style="font-size:12px;color:var(--danger);">정적 스펙 없음 (JS-only?)</div>';
+		}
+		html += '</div></div></div>';
+	}
+	html += '</div>';
+	return html;
+}
+
+// ── Tab 5: Brand ─────────────────────────────────────
+function renderBrandTab(ed) {
+	var html = '';
+	if (!ed.marketing_claims || ed.marketing_claims.length === 0) return '<div class="empty">No marketing claims found. The site may use minimal marketing language.</div>';
+
+	html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">💬 마케팅 클레임 & 검증 가능성 분석</h3>';
+	html += '<div style="overflow-x:auto;"><table class="eval-page-table"><thead><tr><th>클레임</th><th>위치</th><th>출처</th><th>검증성</th></tr></thead><tbody>';
+	for (var i = 0; i < ed.marketing_claims.length; i++) {
+		var cl = ed.marketing_claims[i];
+		var vColor = cl.verifiability === 'verifiable' || cl.verifiability === 'factual' ? 'var(--success)' : cl.verifiability === 'partial' ? 'var(--warning)' : 'var(--danger)';
+		var vLabel = cl.verifiability === 'verifiable' ? '검증 가능' : cl.verifiability === 'factual' ? '사실 기반' : cl.verifiability === 'partial' ? '부분 검증' : '검증 불가';
+		var locShort = cl.location ? (cl.location.length > 40 ? '...' + cl.location.slice(-35) : cl.location) : '-';
+		html += '<tr><td style="font-size:12px;max-width:350px;">' + esc(cl.text) + '</td>';
+		html += '<td style="font-size:11px;color:var(--text-muted);font-family:monospace;">' + esc(locShort) + '</td>';
+		html += '<td>' + (cl.has_source ? '✅' : '❌') + '</td>';
+		html += '<td style="color:' + vColor + ';font-weight:600;">' + vLabel + '</td></tr>';
+	}
+	html += '</tbody></table></div>';
+
+	// Summary stats
+	var verified = ed.marketing_claims.filter(function(c) { return c.has_source; }).length;
+	var total = ed.marketing_claims.length;
+	html += '<div style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">';
+	html += '<div style="padding:10px;background:var(--surface2);border-radius:6px;text-align:center;"><div style="font-size:20px;font-weight:700;">' + total + '</div><div style="font-size:11px;color:var(--text-muted);">총 클레임</div></div>';
+	html += '<div style="padding:10px;background:var(--surface2);border-radius:6px;text-align:center;"><div style="font-size:20px;font-weight:700;color:var(--success);">' + verified + '</div><div style="font-size:11px;color:var(--text-muted);">출처 있음</div></div>';
+	html += '<div style="padding:10px;background:var(--surface2);border-radius:6px;text-align:center;"><div style="font-size:20px;font-weight:700;color:var(--danger);">' + (total - verified) + '</div><div style="font-size:11px;color:var(--text-muted);">출처 없음</div></div>';
+	html += '</div></div>';
+	return html;
+}
+
+// ── Tab 6: Pages ─────────────────────────────────────
+function renderPagesTab(data) {
+	var html = '';
+	if (!data.multi_page || !data.multi_page.pages || data.multi_page.pages.length === 0) {
+		return '<div class="empty">Multi-page analysis not available. Only single-page analysis was performed.</div>';
+	}
+	var mp = data.multi_page;
+	html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">🔍 페이지별 GEO 점수 (' + mp.page_count + ' pages)</h3>';
+	html += '<div style="text-align:center;padding:16px;margin-bottom:12px;"><div style="font-size:36px;font-weight:800;color:' + scoreColor(mp.aggregate_score) + ';">' + mp.aggregate_score.toFixed(1) + '</div>';
+	html += '<div style="font-size:13px;color:var(--text-muted);">가중 집계 점수 (' + esc(mp.aggregate_grade) + ')</div></div>';
+	html += '<div style="overflow-x:auto;"><table class="eval-page-table"><thead><tr><th>Page URL</th><th>Score</th><th>Grade</th><th>상태</th></tr></thead><tbody>';
+	for (var i = 0; i < mp.pages.length; i++) {
+		var p = mp.pages[i];
+		var pc = scoreColor(p.score);
+		var urlShort = p.url ? (p.url.length > 60 ? '...' + p.url.slice(-55) : p.url) : p.filename;
+		var tag = p.score >= 80 ? '<span style="font-size:11px;padding:2px 6px;background:rgba(16,185,129,0.15);color:var(--success);border-radius:3px;">Good</span>' :
+				p.score >= 55 ? '<span style="font-size:11px;padding:2px 6px;background:rgba(245,158,11,0.15);color:var(--warning);border-radius:3px;">Needs Work</span>' :
+				'<span style="font-size:11px;padding:2px 6px;background:rgba(239,68,68,0.15);color:var(--danger);border-radius:3px;">Critical</span>';
+		html += '<tr><td style="font-family:monospace;font-size:12px;">' + esc(urlShort) + '</td>';
+		html += '<td style="font-weight:700;color:' + pc + ';">' + p.score.toFixed(1) + '</td>';
+		html += '<td>' + esc(p.grade) + '</td>';
+		html += '<td>' + tag + '</td></tr>';
+	}
+	html += '</tbody></table></div></div>';
+	return html;
+}
+
+// ── Tab 7: Recommendations ───────────────────────────
+function renderRecommendationsTab(ed) {
+	var html = '';
+	if (!ed.improvements || ed.improvements.length === 0) return '<div class="empty">No recommendations generated.</div>';
+
+	html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">🎯 개선 권고사항 (' + ed.improvements.length + '건)</h3>';
+	html += '<div style="overflow-x:auto;"><table class="eval-page-table"><thead><tr><th>#</th><th>항목</th><th>영향</th><th>난이도</th><th>Sprint</th><th>영향 차원</th></tr></thead><tbody>';
+	for (var i = 0; i < ed.improvements.length; i++) {
+		var r = ed.improvements[i];
+		var impactBars = '';
+		for (var j = 0; j < 5; j++) impactBars += j < r.impact ? '★' : '☆';
+		var diffLabel = r.difficulty <= 1 ? 'Easy' : r.difficulty <= 2 ? 'Medium' : r.difficulty <= 3 ? 'Hard' : 'Very Hard';
+		var diffColor = r.difficulty <= 1 ? 'var(--success)' : r.difficulty <= 2 ? 'var(--warning)' : 'var(--danger)';
+		var sprintLabel = r.sprint === 1 ? '즉시' : r.sprint === 2 ? '1~3개월' : '분기';
+		html += '<tr><td><code>' + esc(r.id) + '</code></td>';
+		html += '<td><strong>' + esc(r.title) + '</strong><div style="font-size:11px;color:var(--text-muted);margin-top:2px;">' + esc(r.description.slice(0, 100)) + '</div></td>';
+		html += '<td style="color:var(--warning);">' + impactBars + '</td>';
+		html += '<td style="color:' + diffColor + ';font-weight:600;">' + diffLabel + '</td>';
+		html += '<td>' + sprintLabel + '</td>';
+		html += '<td style="font-size:11px;">' + esc(r.affected_dimensions.join(', ')) + '</td></tr>';
+	}
+	html += '</tbody></table></div></div>';
+	return html;
+}
+
+// ── Tab 8: Evidence ──────────────────────────────────
+function renderEvidenceTab(ed) {
+	var html = '';
+	if (!ed.schema_coverage && !ed.js_dependency) return '<div class="empty">No evidence data available.</div>';
+
+	// Schema comparison: implemented vs not
+	if (ed.schema_coverage) {
+		var implemented = ed.schema_coverage.filter(function(s) { return s.present; });
+		var missing = ed.schema_coverage.filter(function(s) { return !s.present; });
+
+		html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">';
+		html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">✅ 구현된 스키마 (실측)</h3>';
+		for (var i = 0; i < implemented.length; i++) {
+			var s = implemented[i];
+			html += '<div style="padding:8px;margin-bottom:6px;background:rgba(16,185,129,0.05);border:1px solid rgba(16,185,129,0.2);border-radius:6px;">';
+			html += '<div style="font-weight:700;font-size:13px;">' + esc(s.schema_type) + '</div>';
+			html += '<div style="font-size:11px;color:var(--text-muted);margin-top:2px;">' + esc(s.details) + ' · 품질: ' + esc(s.quality) + '</div></div>';
+		}
+		if (implemented.length === 0) html += '<div class="empty" style="font-size:12px;">구현된 스키마 없음</div>';
+		html += '</div>';
+
+		html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">❌ 미구현 스키마 (실측)</h3>';
+		for (var i = 0; i < missing.length; i++) {
+			var s = missing[i];
+			var critical = ['Product', 'Offer', 'AggregateRating'].indexOf(s.schema_type) >= 0;
+			html += '<div style="padding:8px;margin-bottom:6px;background:' + (critical ? 'rgba(239,68,68,0.05)' : 'rgba(245,158,11,0.05)') + ';border:1px solid ' + (critical ? 'rgba(239,68,68,0.2)' : 'rgba(245,158,11,0.2)') + ';border-radius:6px;">';
+			html += '<div style="font-weight:700;font-size:13px;color:' + (critical ? 'var(--danger)' : 'var(--warning)') + ';">' + esc(s.schema_type) + (critical ? ' (핵심)' : '') + '</div></div>';
+		}
+		if (missing.length === 0) html += '<div class="empty" style="font-size:12px;">모든 스키마 구현 완료</div>';
+		html += '</div></div>';
+	}
+
+	// Product info evidence
+	if (ed.product_info && ed.product_info.length > 0) {
+		html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">🔬 제품 데이터 추출 실증</h3>';
+		html += '<div style="overflow-x:auto;"><table class="eval-page-table"><thead><tr><th>페이지</th><th>제품명</th><th>가격</th><th>Schema 스펙</th><th>HTML 스펙</th><th>평점</th></tr></thead><tbody>';
+		for (var i = 0; i < ed.product_info.length; i++) {
+			var pi = ed.product_info[i];
+			var fn = pi.filename.length > 30 ? '...' + pi.filename.slice(-25) : pi.filename;
+			html += '<tr><td style="font-family:monospace;font-size:11px;">' + esc(fn) + '</td>';
+			html += '<td>' + (pi.info.product_name ? '✅' : '❌') + '</td>';
+			html += '<td>' + (pi.info.prices.length > 0 ? '✅ ' + pi.info.prices.length : '❌') + '</td>';
+			html += '<td>' + (pi.info.specs_in_schema.length > 0 ? '✅ ' + pi.info.specs_in_schema.length : '❌') + '</td>';
+			html += '<td>' + (pi.info.specs_in_html.length > 0 ? '⚠️ ' + pi.info.specs_in_html.length : '❌') + '</td>';
+			html += '<td>' + (pi.info.has_aggregate_rating ? '✅' : '❌') + '</td></tr>';
 		}
 		html += '</tbody></table></div></div>';
 	}
 
-	// ── Stage Execution Summary ─────────────────────────────
-	if (data.stages && data.stages.length > 0) {
-		html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">⏱️ Pipeline Execution Summary</h3>';
-		for (const s of data.stages) {
-			const icon = s.status === 'completed' ? '✅' : s.status === 'failed' ? '❌' : s.status === 'running' ? '🔄' : '⏳';
-			const dur = s.duration_ms ? ' (' + (s.duration_ms / 1000).toFixed(1) + 's)' : '';
-			html += '<div style="padding:6px 0;border-bottom:1px solid rgba(55,65,81,0.3);font-size:13px;">';
-			html += icon + ' <strong>' + esc(s.stage) + '</strong>' + dur;
-			if (s.result_summary) html += '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">' + esc(s.result_summary) + '</div>';
-			html += '</div>';
-		}
+	return html;
+}
+
+// ── Tab 9: Roadmap ───────────────────────────────────
+function renderRoadmapTab(ed) {
+	var html = '';
+	if (!ed.improvements || ed.improvements.length === 0) return '<div class="empty">No improvement roadmap available.</div>';
+
+	var sprint1 = ed.improvements.filter(function(r) { return r.sprint === 1; });
+	var sprint2 = ed.improvements.filter(function(r) { return r.sprint === 2; });
+	var sprint3 = ed.improvements.filter(function(r) { return r.sprint === 3; });
+
+	html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">🗺️ 개선 로드맵 (' + ed.improvements.length + ' recommendations)</h3>';
+	html += renderSprintGroup('🔴 Sprint 1 — 즉시 실행 (1~2주)', 'var(--danger)', sprint1);
+	html += renderSprintGroup('🟡 Sprint 2 — 1~3개월', 'var(--warning)', sprint2);
+	html += renderSprintGroup('🟢 Sprint 3 — 분기 내', 'var(--success)', sprint3);
+	html += '</div>';
+	return html;
+}
+
+// ── Tab 10: Pipeline ─────────────────────────────────
+function renderPipelineTab(data) {
+	var html = '';
+	if (!data.stages || data.stages.length === 0) return '<div class="empty">No pipeline execution data.</div>';
+
+	html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">⏱️ 파이프라인 실행 요약</h3>';
+	for (var i = 0; i < data.stages.length; i++) {
+		var s = data.stages[i];
+		var icon = s.status === 'completed' ? '✅' : s.status === 'failed' ? '❌' : s.status === 'running' ? '🔄' : '⏳';
+		var dur = s.duration_ms ? ' (' + (s.duration_ms / 1000).toFixed(1) + 's)' : '';
+		html += '<div style="padding:8px 0;border-bottom:1px solid rgba(55,65,81,0.3);font-size:13px;">';
+		html += icon + ' <strong>' + esc(s.stage) + '</strong>' + dur;
+		if (s.result_summary) html += '<div style="font-size:12px;color:var(--text-muted);margin-top:2px;">' + esc(s.result_summary) + '</div>';
 		html += '</div>';
 	}
-
-	container.innerHTML = html;
+	html += '</div>';
+	return html;
 }
 
 // ── Agent Prompts ────────────────────────────────────
