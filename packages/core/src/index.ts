@@ -36,6 +36,7 @@ export * from "./agents/strategy-agent.js";
 export * from "./agents/optimization-agent.js";
 export * from "./agents/validation-agent.js";
 export * from "./agents/pipeline-runner.js";
+export * from "./agents/synthetic-probes.js";
 export * from "./agents/types.js";
 
 // Evaluation Templates

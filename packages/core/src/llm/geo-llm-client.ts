@@ -144,6 +144,60 @@ async function callOpenAI(
 	};
 }
 
+async function callAzureOpenAI(
+	provider: LLMProviderSettings,
+	request: LLMRequest,
+	model: string,
+): Promise<LLMResponse> {
+	const baseUrl = (provider.api_base_url ?? "").replace(/\/+$/, "");
+	const deployment = model;
+	const url = `${baseUrl}/openai/deployments/${deployment}/chat/completions?api-version=2024-08-01-preview`;
+
+	const messages: Array<{ role: "system" | "user"; content: string }> = [];
+	if (request.system_instruction) {
+		messages.push({ role: "system", content: request.system_instruction });
+	}
+	messages.push({ role: "user", content: request.prompt });
+
+	const startTime = Date.now();
+	const res = await fetch(url, {
+		method: "POST",
+		headers: {
+			"api-key": provider.api_key ?? "",
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({
+			messages,
+			max_tokens: request.max_tokens ?? provider.max_tokens ?? 4096,
+			temperature: request.temperature ?? provider.temperature ?? 0.7,
+			...(request.json_mode ? { response_format: { type: "json_object" } } : {}),
+		}),
+	});
+
+	if (!res.ok) {
+		const errBody = await res.text();
+		throw new Error(`Azure OpenAI error ${res.status}: ${errBody}`);
+	}
+
+	const data = await res.json();
+	const content = data.choices?.[0]?.message?.content ?? "";
+	const usage = data.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+	const costUsd = estimateCost(data.model ?? model, usage.prompt_tokens, usage.completion_tokens);
+
+	return {
+		content,
+		model: data.model ?? model,
+		provider: provider.provider_id,
+		usage: {
+			prompt_tokens: usage.prompt_tokens,
+			completion_tokens: usage.completion_tokens,
+			total_tokens: usage.total_tokens,
+		},
+		latency_ms: Date.now() - startTime,
+		cost_usd: costUsd,
+	};
+}
+
 async function callAnthropic(
 	provider: LLMProviderSettings,
 	request: LLMRequest,
@@ -289,6 +343,9 @@ export class GeoLLMClient {
 					request,
 					model,
 				);
+				break;
+			case "microsoft":
+				response = await callAzureOpenAI(provider, request, model);
 				break;
 			default:
 				throw new Error(
