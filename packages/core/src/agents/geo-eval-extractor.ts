@@ -419,6 +419,186 @@ export interface GeoEvaluationData {
 	}>;
 	/** 블록된 주요 경로 */
 	blocked_paths: string[];
+	/** 개선 권고사항 (impact/difficulty/sprint 포함) */
+	improvements: ImprovementRecommendation[];
+}
+
+// ── Improvement Recommendations ────────────────────────────
+
+export interface ImprovementRecommendation {
+	id: string;
+	title: string;
+	description: string;
+	impact: 1 | 2 | 3 | 4 | 5;
+	difficulty: 1 | 2 | 3 | 4 | 5;
+	sprint: 1 | 2 | 3;
+	affected_dimensions: string[];
+	current_state: string;
+}
+
+/**
+ * 분석 데이터로부터 개선 권고사항을 자동 생성한다.
+ */
+export function generateImprovements(
+	evalData: Omit<GeoEvaluationData, "improvements">,
+	dimensions: Array<{ id: string; label: string; score: number }>,
+): ImprovementRecommendation[] {
+	const recs: ImprovementRecommendation[] = [];
+	let counter = 1;
+
+	// llms.txt
+	if (!evalData.llms_txt.exists) {
+		recs.push({
+			id: `R-${counter++}`,
+			title: "llms.txt 파일 생성 및 배포",
+			description:
+				"LLM에게 사이트 구조, 제품 카탈로그 위치, 인용 가이드라인을 명시적으로 안내하는 llms.txt 파일을 생성하세요.",
+			impact: 5,
+			difficulty: 1,
+			sprint: 1,
+			affected_dimensions: ["S1", "S6"],
+			current_state: "llms.txt 미존재 (HTTP 404)",
+		});
+	}
+
+	// ClaudeBot / Applebot not specified
+	const unspecifiedBots = evalData.bot_policies.filter((b) => b.status === "not_specified");
+	if (unspecifiedBots.length > 0) {
+		recs.push({
+			id: `R-${counter++}`,
+			title: `robots.txt에 ${unspecifiedBots.map((b) => b.bot_name).join(", ")} 명시 추가`,
+			description:
+				"주요 AI 봇에 대한 접근 정책을 robots.txt에 명시적으로 추가하여 크롤링 허용/차단을 명확히 하세요.",
+			impact: 3,
+			difficulty: 1,
+			sprint: 1,
+			affected_dimensions: ["S1"],
+			current_state: `${unspecifiedBots.length}개 AI 봇 미명시 (기본 규칙 적용)`,
+		});
+	}
+
+	// Missing schemas
+	const missingSchemas = evalData.schema_coverage.filter((s) => !s.present);
+	const criticalMissing = missingSchemas.filter((s) =>
+		["Product", "Offer", "AggregateRating", "BreadcrumbList", "FAQPage"].includes(s.schema_type),
+	);
+	if (criticalMissing.length > 0) {
+		for (const schema of criticalMissing) {
+			const schemaImpact = ["Product", "Offer"].includes(schema.schema_type) ? 5 : 4;
+			recs.push({
+				id: `R-${counter++}`,
+				title: `${schema.schema_type} Schema 구현`,
+				description: `${schema.schema_type} JSON-LD 스키마를 구현하여 LLM이 제품/서비스 정보를 구조적으로 파싱할 수 있도록 하세요.`,
+				impact: schemaImpact as 1 | 2 | 3 | 4 | 5,
+				difficulty: schema.schema_type === "BreadcrumbList" ? 1 : 2,
+				sprint: schemaImpact >= 5 ? 1 : 2,
+				affected_dimensions: ["S2", "S3"],
+				current_state: `${schema.schema_type} 미구현`,
+			});
+		}
+	}
+
+	// Unverifiable marketing claims
+	const unverifiedClaims = evalData.marketing_claims.filter((c) => c.verifiability === "unverifiable");
+	if (unverifiedClaims.length >= 2) {
+		recs.push({
+			id: `R-${counter++}`,
+			title: "마케팅 클레임에 검증 가능한 근거 추가",
+			description: `${unverifiedClaims.length}개 마케팅 클레임에 출처(수상 기관, 조사 기관, 특허 번호 등)를 인용 마크업으로 추가하세요. LLM 팩트 체크 시 신뢰도가 향상됩니다.`,
+			impact: 3,
+			difficulty: 2,
+			sprint: 2,
+			affected_dimensions: ["S4", "S5"],
+			current_state: `${unverifiedClaims.length}개 클레임 출처 없음`,
+		});
+	}
+
+	// High JS dependency
+	if (evalData.js_dependency.estimated_js_dependency > 0.5) {
+		recs.push({
+			id: `R-${counter++}`,
+			title: "핵심 콘텐츠 정적 HTML 노출 (SSR/SSG)",
+			description:
+				"JavaScript 렌더링 후에만 보이는 스펙/가격 데이터를 정적 HTML에도 포함하세요. LLM 크롤러 대부분이 JS를 실행하지 않습니다.",
+			impact: 5,
+			difficulty: 4,
+			sprint: 2,
+			affected_dimensions: ["S3", "S4"],
+			current_state: `JS 의존도 ${Math.round(evalData.js_dependency.estimated_js_dependency * 100)}%`,
+		});
+	}
+
+	// Product info gaps: pages with no schema but HTML specs
+	const pagesWithGaps = evalData.product_info.filter(
+		(p) => p.info.specs_in_html.length > 0 && p.info.specs_in_schema.length === 0,
+	);
+	if (pagesWithGaps.length > 0) {
+		recs.push({
+			id: `R-${counter++}`,
+			title: "제품 스펙 데이터를 Schema additionalProperty로 구조화",
+			description: `${pagesWithGaps.length}개 페이지에서 스펙 데이터가 HTML에 존재하지만 Schema.org로 구조화되지 않았습니다. additionalProperty/PropertyValue를 추가하세요.`,
+			impact: 5,
+			difficulty: 2,
+			sprint: 2,
+			affected_dimensions: ["S2", "S3"],
+			current_state: `${pagesWithGaps.length}개 페이지 스펙 비구조화`,
+		});
+	}
+
+	// Low-scoring dimensions
+	for (const dim of dimensions) {
+		if (dim.score < 30 && !recs.some((r) => r.affected_dimensions.includes(dim.id))) {
+			recs.push({
+				id: `R-${counter++}`,
+				title: `${dim.id} ${dim.label} 개선 필요`,
+				description: `${dim.label} 점수가 ${dim.score.toFixed(0)}점으로 매우 낮습니다. 해당 영역의 구조화 데이터와 콘텐츠를 보강하세요.`,
+				impact: 4,
+				difficulty: 3,
+				sprint: 2,
+				affected_dimensions: [dim.id],
+				current_state: `${dim.score.toFixed(0)}/100`,
+			});
+		}
+	}
+
+	// Organization sameAs (Wikipedia/Wikidata)
+	const orgSchema = evalData.schema_coverage.find(
+		(s) => s.schema_type === "Organization" || s.schema_type === "Corporation",
+	);
+	if (orgSchema?.present) {
+		recs.push({
+			id: `R-${counter++}`,
+			title: "Corporation sameAs에 Wikipedia/Wikidata URL 추가",
+			description:
+				"Organization/Corporation 스키마의 sameAs 배열에 Wikipedia, Wikidata URL을 추가하여 LLM Knowledge Graph 연결을 강화하세요.",
+			impact: 3,
+			difficulty: 1,
+			sprint: 1,
+			affected_dimensions: ["S5", "S6"],
+			current_state: "sameAs에 소셜 링크만 존재 (추정)",
+		});
+	}
+
+	// dateModified recommendation
+	const webPageSchema = evalData.schema_coverage.find((s) => s.schema_type === "WebPage");
+	if (webPageSchema?.present) {
+		recs.push({
+			id: `R-${counter++}`,
+			title: "dateModified / datePublished 전면 적용",
+			description:
+				"모든 WebPage/Product 스키마에 dateModified를 추가하여 LLM이 정보 최신성을 판단할 수 있게 하세요.",
+			impact: 2,
+			difficulty: 1,
+			sprint: 1,
+			affected_dimensions: ["S6"],
+			current_state: "dateModified 미적용 (추정)",
+		});
+	}
+
+	// Sort by impact desc, then difficulty asc
+	recs.sort((a, b) => b.impact - a.impact || a.difficulty - b.difficulty);
+
+	return recs;
 }
 
 /**
@@ -427,6 +607,7 @@ export interface GeoEvaluationData {
 export function extractGeoEvaluationData(
 	homepage: CrawlData,
 	subPages: Array<{ url: string; filename: string; crawl_data: CrawlData }>,
+	dimensions?: Array<{ id: string; label: string; score: number }>,
 ): GeoEvaluationData {
 	const allPages = [
 		{ url: homepage.url, filename: "index.html", crawl_data: homepage },
@@ -467,7 +648,7 @@ export function extractGeoEvaluationData(
 		...new Set(botPolicies.flatMap((b) => b.disallowed_paths)),
 	].filter((p) => p !== "/");
 
-	return {
+	const baseData = {
 		bot_policies: botPolicies,
 		llms_txt: llmsTxt,
 		schema_coverage: schemaCoverage,
@@ -475,5 +656,13 @@ export function extractGeoEvaluationData(
 		js_dependency: jsDependency,
 		product_info: productInfo,
 		blocked_paths: blockedPaths,
+	};
+
+	// 8. Generate improvement recommendations
+	const improvements = generateImprovements(baseData, dimensions ?? []);
+
+	return {
+		...baseData,
+		improvements,
 	};
 }

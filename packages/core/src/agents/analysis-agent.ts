@@ -332,7 +332,7 @@ export async function runAnalysis(
 		filename: p.filename,
 		crawl_data: p.crawl_data,
 	})) ?? [];
-	const evalData = extractGeoEvaluationData(crawlData, subPages);
+	const evalData = extractGeoEvaluationData(crawlData, subPages, geoScores.dimensions);
 
 	return {
 		report,

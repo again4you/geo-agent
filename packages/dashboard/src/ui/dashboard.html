@@ -641,10 +641,34 @@ async function loadEvaluation() {
 	container.innerHTML = '<div class="empty">Loading evaluation...</div>';
 	try {
 		const latest = await api('/api/targets/' + targetId + '/pipeline/latest');
-		const evalData = await api('/api/targets/' + targetId + '/pipeline/' + latest.pipeline_id + '/evaluation');
-		renderEvaluation(evalData, container);
+		const isTerminal = ['COMPLETED', 'FAILED', 'PARTIAL_FAILURE'].includes(latest.stage);
+
+		// Show pipeline status header
+		let statusHtml = '<div class="card" style="padding:12px 16px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">';
+		statusHtml += '<div style="font-size:12px;color:var(--text-muted);">Pipeline: <code>' + latest.pipeline_id.slice(0, 8) + '...</code> · Started: ' + new Date(latest.started_at).toLocaleString() + '</div>';
+		statusHtml += '<div style="display:flex;gap:8px;align-items:center;">';
+		statusHtml += '<span class="stage-badge stage-' + latest.stage + '">' + latest.stage + '</span>';
+		if (!isTerminal) {
+			statusHtml += '<span style="font-size:12px;color:var(--warning);animation:stagePulse 1.5s infinite;">⏳ Pipeline still running — reload for latest results</span>';
+		}
+		statusHtml += '<button class="btn btn-primary btn-sm" onclick="loadEvaluation()" style="font-size:11px;">🔄 Refresh</button>';
+		statusHtml += '</div></div>';
+
+		try {
+			const evalData = await api('/api/targets/' + targetId + '/pipeline/' + latest.pipeline_id + '/evaluation');
+			container.innerHTML = statusHtml;
+			const evalDiv = document.createElement('div');
+			container.appendChild(evalDiv);
+			renderEvaluation(evalData, evalDiv);
+		} catch (e2) {
+			if (!isTerminal) {
+				container.innerHTML = statusHtml + '<div class="empty">Pipeline is running (' + latest.stage + '). Evaluation data will be available after ANALYZING stage completes. Click Refresh to check.</div>';
+			} else {
+				container.innerHTML = statusHtml + '<div class="empty">No evaluation data available for this pipeline.</div>';
+			}
+		}
 	} catch (e) {
-		container.innerHTML = '<div class="empty">No evaluation data. Run a pipeline first.</div>';
+		container.innerHTML = '<div class="empty">No pipeline found. Run a pipeline first.</div>';
 	}
 }
 
@@ -787,6 +811,46 @@ function renderEvaluation(data, container) {
 				html += '<span style="font-family:monospace;font-size:11px;padding:3px 8px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.2);border-radius:4px;color:var(--danger);">' + esc(path) + '</span>';
 			}
 			html += '</div></div>';
+		}
+
+		// ── Improvement Roadmap ─────────────────────────────
+		if (ed.improvements && ed.improvements.length > 0) {
+			html += '<div class="card"><h3 style="font-size:14px;margin-bottom:12px;">🎯 Improvement Roadmap (' + ed.improvements.length + ' recommendations)</h3>';
+
+			// Group by sprint
+			var sprint1 = ed.improvements.filter(function(r) { return r.sprint === 1; });
+			var sprint2 = ed.improvements.filter(function(r) { return r.sprint === 2; });
+			var sprint3 = ed.improvements.filter(function(r) { return r.sprint === 3; });
+
+			function renderSprintGroup(label, color, items) {
+				if (items.length === 0) return '';
+				var h = '<div style="margin-bottom:16px;">';
+				h += '<div style="font-size:11px;font-weight:700;color:' + color + ';text-transform:uppercase;letter-spacing:0.7px;margin-bottom:8px;">' + label + '</div>';
+				for (var i = 0; i < items.length; i++) {
+					var r = items[i];
+					var impactBars = '';
+					for (var j = 0; j < 5; j++) impactBars += j < r.impact ? '★' : '☆';
+					var diffLabel = r.difficulty <= 1 ? 'Easy' : r.difficulty <= 2 ? 'Medium' : r.difficulty <= 3 ? 'Hard' : 'Very Hard';
+					var diffColor = r.difficulty <= 1 ? 'var(--success)' : r.difficulty <= 2 ? 'var(--warning)' : 'var(--danger)';
+					h += '<div style="padding:10px 14px;margin-bottom:8px;background:var(--surface2);border-radius:6px;border-left:3px solid ' + (r.impact >= 4 ? 'var(--danger)' : r.impact >= 3 ? 'var(--warning)' : 'var(--success)') + ';">';
+					h += '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px;">';
+					h += '<strong style="font-size:13px;">' + esc(r.id) + ' ' + esc(r.title) + '</strong>';
+					h += '<div style="display:flex;gap:8px;align-items:center;font-size:11px;">';
+					h += '<span style="color:var(--warning);">' + impactBars + '</span>';
+					h += '<span style="color:' + diffColor + ';font-weight:600;">' + diffLabel + '</span>';
+					h += '</div></div>';
+					h += '<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">' + esc(r.description) + '</div>';
+					h += '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">현재: ' + esc(r.current_state) + ' · 영향: ' + r.affected_dimensions.join(', ') + '</div>';
+					h += '</div>';
+				}
+				h += '</div>';
+				return h;
+			}
+
+			html += renderSprintGroup('🔴 Sprint 1 — 즉시 실행 (1~2주)', 'var(--danger)', sprint1);
+			html += renderSprintGroup('🟡 Sprint 2 — 1~3개월', 'var(--warning)', sprint2);
+			html += renderSprintGroup('🟢 Sprint 3 — 분기 내', 'var(--success)', sprint3);
+			html += '</div>';
 		}
 	}
 
