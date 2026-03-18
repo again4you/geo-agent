@@ -1,7 +1,9 @@
 import {
 	type AppSettings,
 	type GeoDatabase,
+	GeoLLMClient,
 	PipelineRepository,
+	ProviderConfigManager,
 	StageExecutionRepository,
 	TargetRepository,
 	type PipelineConfig,
@@ -131,17 +133,43 @@ pipelineRouter.post("/:id/pipeline", async (c) => {
 			},
 		};
 
+		// Build chatLLM dependency — graceful degradation if no API key configured
+		let chatLLM: PipelineDeps["chatLLM"] | undefined;
+		const workspaceDir = sharedSettings?.workspace_dir ?? "./run";
+		try {
+			const configManager = new ProviderConfigManager(workspaceDir);
+			const enabledProviders = configManager.getEnabled();
+			if (enabledProviders.length > 0 && enabledProviders.some((p) => p.api_key)) {
+				const client = new GeoLLMClient(workspaceDir);
+				chatLLM = (req) => client.chat(req);
+				console.log(
+					`🤖 LLM enabled: ${enabledProviders.filter((p) => p.api_key).map((p) => p.provider_id).join(", ")}`,
+				);
+			} else {
+				console.log(
+					"⚠️ No LLM API key configured — running pipeline in rule-based mode. " +
+					"Configure via Dashboard > LLM Providers tab.",
+				);
+			}
+		} catch (err) {
+			console.warn(
+				"⚠️ Failed to initialize LLM client — running pipeline in rule-based mode:",
+				err instanceof Error ? err.message : String(err),
+			);
+		}
+
 		const deps: PipelineDeps = {
 			crawlTarget,
 			scoreTarget,
 			classifySite,
 			crawlMultiplePages,
+			chatLLM,
 		};
 
 		const config: PipelineConfig = {
 			target_id: targetId,
 			target_url: target.url,
-			workspace_dir: sharedSettings?.workspace_dir ?? "./run",
+			workspace_dir: workspaceDir,
 			stageCallbacks,
 		};
 
@@ -172,13 +200,14 @@ async function executePipelineAsync(
 	repo: PipelineRepository,
 ): Promise<void> {
 	try {
-		console.log(`⏳ Pipeline started for target ${targetId} (${config.target_url})`);
+		const llmMode = deps.chatLLM ? "LLM-enhanced" : "rule-based only";
+		console.log(`⏳ Pipeline started for target ${targetId} (${config.target_url}) [${llmMode}]`);
 		const result = await runPipeline(config, deps);
 
 		if (result.success) {
 			await repo.updateStage(pipelineId, "COMPLETED");
 			console.log(
-				`✅ Pipeline completed for ${targetId}: ${result.initial_score} → ${result.final_score} (+${result.delta})`,
+				`✅ Pipeline completed for ${targetId}: ${result.initial_score} → ${result.final_score} (+${result.delta}) [${result.cycles_completed} cycles]`,
 			);
 		} else {
 			await repo.setError(pipelineId, result.error ?? "Unknown error");

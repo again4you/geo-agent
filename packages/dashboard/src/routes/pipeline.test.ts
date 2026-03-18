@@ -740,3 +740,119 @@ describe("GET /api/targets/:id/cycle/status — stage info", () => {
 		expect(status2.stage_count).toBe(1);
 	});
 });
+
+// ══════════════════════════════════════════════════════════════
+// LLM Integration: chatLLM dependency injection
+// ══════════════════════════════════════════════════════════════
+
+describe("LLM integration in pipeline execution", () => {
+	it("pipeline starts successfully without LLM API key (rule-based mode)", async () => {
+		// Default config has no API key set — should still start pipeline
+		const targetId = await getTargetId();
+		const res = await app.request(
+			`/api/targets/${targetId}/pipeline?execute=true`,
+			{ method: "POST", headers: { "Content-Type": "application/json" } },
+		);
+		expect(res.status).toBe(201);
+		const body = await res.json();
+		expect(body.pipeline_id).toBeDefined();
+		expect(body.stage).toBe("INIT");
+	});
+
+	it("pipeline creates DB record even when LLM is not configured", async () => {
+		const targetId = await getTargetId();
+		await app.request(
+			`/api/targets/${targetId}/pipeline?execute=true`,
+			{ method: "POST", headers: { "Content-Type": "application/json" } },
+		);
+		// Verify pipeline was created in DB
+		const listRes = await app.request(`/api/targets/${targetId}/pipeline`);
+		const pipelines = await listRes.json();
+		expect(pipelines.length).toBeGreaterThanOrEqual(1);
+	});
+
+	it("cycle/status returns completed_at field", async () => {
+		const targetId = await getTargetId();
+		const createRes = await createPipeline(targetId);
+		const pipeline = await createRes.json();
+
+		// Manually complete the pipeline for testing
+		const { PipelineRepository } = await import("@geo-agent/core");
+		const pipelineRepo = new PipelineRepository(db);
+		await pipelineRepo.updateStage(pipeline.pipeline_id, "COMPLETED");
+
+		const statusRes = await app.request(`/api/targets/${targetId}/cycle/status`);
+		const status = await statusRes.json();
+		expect(status.completed_at).not.toBeNull();
+		expect(status.is_terminal).toBe(true);
+	});
+
+	it("LLM provider config is accessible from workspace", async () => {
+		// Verify ProviderConfigManager can load from test workspace
+		const { ProviderConfigManager } = await import("@geo-agent/core");
+		const configManager = new ProviderConfigManager(testDir);
+		const providers = configManager.loadAll();
+		expect(Array.isArray(providers)).toBe(true);
+		expect(providers.length).toBeGreaterThan(0);
+
+		// Default state: OpenAI enabled but no API key
+		const openai = providers.find((p: { provider_id: string }) => p.provider_id === "openai");
+		expect(openai).toBeDefined();
+		expect(openai!.enabled).toBe(true);
+		expect(openai!.api_key).toBeUndefined();
+	});
+
+	it("LLM provider with API key makes chatLLM available", async () => {
+		// Configure a provider with a fake API key
+		const { ProviderConfigManager, GeoLLMClient } = await import("@geo-agent/core");
+		const configManager = new ProviderConfigManager(testDir);
+		const openai = configManager.load("openai");
+		configManager.save({ ...openai, enabled: true, api_key: "sk-test-fake-key-12345" });
+
+		// Verify enabled providers now have an API key
+		const enabled = configManager.getEnabled();
+		const withKey = enabled.filter((p: { api_key?: string }) => p.api_key);
+		expect(withKey.length).toBeGreaterThan(0);
+
+		// GeoLLMClient should be constructable
+		const client = new GeoLLMClient(testDir);
+		expect(client).toBeDefined();
+
+		// Clean up — reset provider
+		configManager.save({ ...openai, enabled: true, api_key: undefined });
+	});
+
+	it("GeoLLMClient.chat() throws when API key is invalid (not silently succeed)", async () => {
+		const { ProviderConfigManager, GeoLLMClient } = await import("@geo-agent/core");
+		const configManager = new ProviderConfigManager(testDir);
+		const openai = configManager.load("openai");
+		configManager.save({ ...openai, enabled: true, api_key: "sk-invalid-key" });
+
+		const client = new GeoLLMClient(testDir);
+
+		// chat() should throw an error (authentication failure, network error, etc.)
+		await expect(
+			client.chat({ prompt: "test" }),
+		).rejects.toThrow();
+
+		// Clean up
+		configManager.save({ ...openai, enabled: true, api_key: undefined });
+	});
+
+	it("GeoLLMClient.selectProvider() throws when no providers enabled", async () => {
+		const { ProviderConfigManager, GeoLLMClient } = await import("@geo-agent/core");
+		const configManager = new ProviderConfigManager(testDir);
+
+		// Disable all providers
+		const all = configManager.loadAll();
+		for (const p of all) {
+			configManager.save({ ...p, enabled: false });
+		}
+
+		const client = new GeoLLMClient(testDir);
+		expect(() => client.selectProvider()).toThrow(/No LLM providers enabled/);
+
+		// Restore defaults
+		configManager.resetAll();
+	});
+});
