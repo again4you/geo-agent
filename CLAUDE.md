@@ -13,7 +13,7 @@
 | 에이전트 엔진 | pi-mono (github.com/badlogic/pi-mono) | 버전 고정, upstream 비추적 |
 | 스킬 시스템 | openclaw 호환 3-tier (Bundled/Managed/Workspace) | |
 | 스키마 검증 | Zod schemas → TypeScript 타입 추론 | 모든 데이터 타입 |
-| DB (v1) | SQLite + drizzle-orm | Repository 패턴 |
+| DB (v1) | libSQL (@libsql/client) + drizzle-orm | Repository 패턴, 네이티브 컴파일 불필요 (Windows 호환) |
 | DB (v2+) | PostgreSQL 마이그레이션 예정 | |
 | 백엔드 API | Hono (localhost:3000) | |
 | CLI | Commander.js | `geo start/stop/status/init` |
@@ -34,10 +34,19 @@
 ## 파이프라인 상태 머신
 
 ```
-INIT → ANALYZING → STRATEGIZING → OPTIMIZING → VALIDATING → COMPLETED
-                                                              │
+INIT → ANALYZING → CLONING → STRATEGIZING → OPTIMIZING → VALIDATING → REPORTING → COMPLETED
+                                   ↑                          │
+                                   └── 목표 미달 ─────────────┘
                                                     FAILED / PARTIAL_FAILURE
 ```
+
+## 읽기 전용 원칙 (핵심 설계 제약)
+
+- Target Web Page에 대한 직접 수정 권한 없음
+- 초기 분석만 원본 URL 크롤링 → 이후 로컬 클론에서만 작업
+- 최적화 루프는 클론 대상으로만 수행
+- 최종 결과: Before-After 비교 리포트 + 수정된 Archive 파일 제공
+- 사용자가 수동으로 원본 사이트에 반영
 
 ## 완료된 작업
 
@@ -49,7 +58,7 @@ INIT → ANALYZING → STRATEGIZING → OPTIMIZING → VALIDATING → COMPLETED
   - 4-A: 6개 에이전트 시스템 프롬프트 + 편집 UI
   - 9-A: 에러 핸들링 (재시도, 타임아웃, 롤백)
   - 9-B: LLM 추상화 (GPT-4o 기본, 멀티 프로바이더, API Key + OAuth)
-  - 9-C: 배포 흐름 (direct/cms_api/suggestion_only)
+  - 9-C: 클론 워크플로우 & 결과 전달 (Clone Manager + Report/Archive)
   - 9-D: SQLite 스키마 (7 테이블)
 
 ### Phase 1: 코드 구현 ✅
@@ -125,12 +134,14 @@ INIT → ANALYZING → STRATEGIZING → OPTIMIZING → VALIDATING → COMPLETED
 | 8 | P1 | drizzle.config.ts 상대 경로 문제 | import.meta.url + path.resolve 절대 경로 |
 | 9 | P1 | 후행 슬래시 /api/targets/ → 404 | trimTrailingSlash() 미들웨어 추가 → 301 리다이렉트 |
 
-#### 테스트 (vitest) — 492 tests, 10 files ✅
+#### 테스트 (vitest) — 581 tests, 12 files ✅
 - packages/core/src/models/models.test.ts — 304 tests (18개 Zod 스키마 전체)
+- packages/core/src/models/__tests__/schema-validation.test.ts — 15 tests (기존 버그 수정: GeoScore에 info_recognition_score 누락, PipelineState에 error_message 누락)
 - packages/core/src/config/settings.test.ts — 15 tests
 - packages/core/src/db/connection.test.ts — 13 tests (WAL, FK, 자동 테이블 생성 회귀 포함)
 - packages/core/src/db/repositories/target-repository.test.ts — 32 tests
 - packages/core/src/prompts/prompt-loader.test.ts — 33 tests
+- packages/core/src/prompts/evaluation-templates/evaluation-templates.test.ts — 89 tests (신규: 평가 템플릿 시스템 전체)
 - packages/core/src/bugs.test.ts — 17 tests (9개 버그 회귀 테스트)
 - packages/dashboard/src/routes/targets.test.ts — 47 tests (CRUD + 버그 회귀 22개)
 - packages/dashboard/src/routes/settings.test.ts — 22 tests
@@ -149,19 +160,85 @@ INIT → ANALYZING → STRATEGIZING → OPTIMIZING → VALIDATING → COMPLETED
 - 기본 알림 설정 적용 확인
 - GET /api/settings/agents/prompts — 6개 에이전트 프롬프트
 
+### Phase 2: 평가 프롬프트 템플릿 시스템 설계 ✅
+
+#### 평가 템플릿 3종 작성 ✅
+- packages/core/src/prompts/evaluation-templates/manufacturer.md — 제조사 대표 Site (samsung.com 등)
+- packages/core/src/prompts/evaluation-templates/research.md — 연구소 대표 Site (research.samsung.com 등)
+- packages/core/src/prompts/evaluation-templates/generic.md — 기타 Site (뉴스, 교육, 서비스 등)
+
+#### 템플릿 레지스트리 (TypeScript) ✅
+- packages/core/src/prompts/evaluation-templates/index.ts
+  - SiteType enum + SITE_TYPE_LABELS
+  - ClassificationSignal 스키마 + CLASSIFICATION_SIGNALS (자동 분류 시그널)
+  - ScoringDimension 스키마 + DEFAULT_SCORING_DIMENSIONS (유형별 7차원)
+  - ProbeResult / EvaluationResult / CycleControl Zod 스키마
+  - shouldStopCycle() — Cycle 자동 중단 판정 함수
+  - TEMPLATE_REGISTRY — 유형별 템플릿 등록
+  - calculateGrade() / calculateOverallScore() — 등급/점수 산출
+
+#### ARCHITECTURE.md 섹션 9-E 추가 ✅
+- 9-E.1 개요: 템플릿 시스템 구조
+- 9-E.2 사이트 유형 분류: 자동 분류 시그널 + 수동 분류
+- 9-E.3 평가 템플릿 구조: 공통 프레임워크 + 유형별 차별화
+- 9-E.4 Cycle 제어: 자동 중단 조건 3종 + 수동 중단 + API 엔드포인트
+- 9-E.5 Interactive Dashboard 출력 사양: 10탭, 다크 테마, Chart.js, 파일명 규칙
+
+#### 핵심 설계 결정사항
+- 가중치는 모든 유형 동일 (15/25/20/10/10/10/10) — 차원 이름과 프로브 내용만 유형별 차별화
+- Phase 1~8 구조 동일 — Phase 2(콘텐츠 분석)와 Phase 4(프로브)만 유형별 내용 상이
+- 자동 분류: Phase 1 크롤링 후 시그널 기반 판정 (confidence 포함)
+- Cycle 중단: score_sufficient(≥80) / no_more_improvements(<2점) / max_cycles(10) / manual_stop
+- Dashboard: 초기/중간/최종 결과 동일 HTML 포맷, 10번째 탭(사이클 이력)은 Cycle≥1 시에만 표시
+
+---
+
 ## 다음 할 일 (우선순위 순)
 
-1. **Dashboard 프론트엔드** — 현재 API만 구현, HTML/JS UI 구현 필요 (pi-web-ui 연동)
-2. **LLM Provider 설정 API** — `/api/settings/llm-providers` 라우트 구현
-3. **LLM 추상화 레이어** — provider-config.ts, geo-llm-client.ts, oauth-manager.ts, cost-tracker.ts
-4. **파이프라인 인프라** — state-machine.ts, error-handler.ts, rollback.ts
-5. **Bundled Skills 구현** — dual-crawl, schema-builder, geo-scorer 등 핵심 스킬
+1. **Clone Manager 구현** — clone-manager.ts, clone-metadata.ts (원본 → 로컬 클론 생성)
+2. **Report & Archive 생성기** — report-generator.ts, archive-builder.ts, diff-renderer.ts
+3. **평가 템플릿 엔진 구현** — 템플릿 로더, 파라미터 치환, 사이트 자동 분류 로직
+4. **Cycle 제어 API** — `/api/targets/{id}/cycle/*` 엔드포인트, 자동 중단/수동 중단
+5. **Interactive Dashboard HTML 생성기** — Chart.js 기반 단일 HTML, 10탭 구조
+6. **TargetProfile 스키마 업데이트** — deployment_mode/config 제거, clone_base_path + site_type 추가
+7. **파이프라인 인프라** — state-machine.ts (CLONING/REPORTING 단계 포함), error-handler.ts, rollback.ts
+8. **Dashboard 프론트엔드** — 현재 API만 구현, HTML/JS UI 구현 필요 (pi-web-ui 연동)
+9. **LLM Provider 설정 API** — `/api/settings/llm-providers` 라우트 구현
+10. **LLM 추상화 레이어** — provider-config.ts, geo-llm-client.ts, oauth-manager.ts, cost-tracker.ts
+11. **Bundled Skills 구현** — dual-crawl, schema-builder, geo-scorer 등 핵심 스킬
+
+## Known Issues / Post-MVP 개선 항목
+
+### KI-001: 사이트 유형별 평가 항목 자동 지정 — 설계 완료, 구현 필요
+
+**현황** (설계 완료):
+- 사이트 유형 분류 체계 설계: `manufacturer` / `research` / `generic` (확장 가능)
+- 유형별 평가 프롬프트 템플릿 3종 작성 (ARCHITECTURE.md 9-E, evaluation-templates/)
+- 자동 분류 시그널 정의 (JSON-LD 스키마, URL 패턴, 메타태그 기반)
+- Cycle 제어 (자동 중단 조건 + 수동 중단) 설계 및 Zod 스키마 구현
+- Interactive Dashboard 10탭 출력 사양 설계
+
+**남은 구현**:
+1. 평가 템플릿 엔진 (파라미터 치환, 템플릿 로딩)
+2. 사이트 자동 분류 로직 (Analysis Agent 내)
+3. Cycle 제어 API 엔드포인트
+4. Interactive HTML Dashboard 생성기
+
+**우선순위**: MVP 포함 (Phase 1)
+
+---
 
 ## 주요 아키텍처 참조
 
-- ARCHITECTURE.md — 전체 시스템 설계서 (섹션 1~12 + 4-A/B/C, 9-A/B/C/D)
+- ARCHITECTURE.md — 전체 시스템 설계서 (섹션 1~12 + 4-A/B/C, 9-A/B/C/D/E)
+- **읽기 전용 원칙**: Target Web Page 직접 수정 불가 → 로컬 클론 기반 작업 (섹션 1.3)
 - 에이전트 6종: Orchestrator, Analysis, Strategy, Optimization, Validation, Monitoring
-- 배포 모드 3종: direct, cms_api, suggestion_only
+- **Clone Manager**: 원본 → 로컬 클론 생성/관리 (섹션 9-C.1)
+- **결과 전달**: Before-After Report + Archive .zip 다운로드 (섹션 9-C.3)
+- **이중 트랙 검증**: 구조적 검증(클론) + LLM 기준선(원본) (섹션 4.5)
 - InfoRecognition: 제품/가격/스펙 등 LLM 인식 정확도 검증 시스템
 - Agent Memory: EffectivenessIndex (구조적) + SemanticChangeArchive (벡터 검색)
 - CRAFT 프레임워크: Clarity, Relevance, Authority, Freshness, Traceability
+- **평가 템플릿 시스템**: 3유형 (manufacturer/research/generic) + 자동 분류 (섹션 9-E)
+- **Cycle 제어**: 자동 중단 3조건 + 수동 중단 + 중간 결과 조회 (섹션 9-E.4)
+- **Interactive Dashboard**: 10탭, 다크 테마, Chart.js, 단일 HTML (섹션 9-E.5)

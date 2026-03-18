@@ -116,6 +116,7 @@ export class TargetRepository {
 			status: row.status as TargetProfile["status"],
 			created_at: row.created_at,
 			updated_at: row.updated_at,
+			status: row.status as TargetProfile["status"],
 		};
 	}
 }
