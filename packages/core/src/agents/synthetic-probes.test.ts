@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	PROBE_DEFINITIONS,
 	type ProbeContext,
-	type ProbeRunResult,
+	type SyntheticProbeRunResult,
 	runProbes,
 } from "./synthetic-probes.js";
 

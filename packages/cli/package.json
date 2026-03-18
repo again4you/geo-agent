@@ -17,6 +17,7 @@
 	"dependencies": {
 		"@geo-agent/core": "*",
 		"@geo-agent/dashboard": "*",
+		"@geo-agent/skills": "*",
 		"commander": "^12.0.0"
 	}
 }

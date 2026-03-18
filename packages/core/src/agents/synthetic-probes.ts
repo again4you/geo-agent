@@ -37,7 +37,7 @@ export interface ProbeContext {
 	brand: string;
 }
 
-export interface ProbeResult {
+export interface SyntheticProbeResult {
 	probe_id: string;
 	probe_name: string;
 	category: string;
@@ -54,8 +54,8 @@ export interface ProbeResult {
 	provider: string;
 }
 
-export interface ProbeRunResult {
-	probes: ProbeResult[];
+export interface SyntheticProbeRunResult {
+	probes: SyntheticProbeResult[];
 	summary: {
 		total: number;
 		pass: number;
@@ -207,13 +207,13 @@ export async function runProbes(
 		/** 프로브 간 딜레이 ms (rate limit 방지, 기본: 1000) */
 		delayMs?: number;
 	},
-): Promise<ProbeRunResult> {
+): Promise<SyntheticProbeRunResult> {
 	const probesToRun = options?.probeIds
 		? PROBE_DEFINITIONS.filter((p) => options.probeIds!.includes(p.id))
 		: PROBE_DEFINITIONS;
 
 	const delayMs = options?.delayMs ?? 1000;
-	const results: ProbeResult[] = [];
+	const results: SyntheticProbeResult[] = [];
 
 	for (const probe of probesToRun) {
 		const query = probe.generateQuery(context);
