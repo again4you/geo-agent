@@ -580,7 +580,7 @@ async function loadPipelines() {
 					</div>
 				</div>
 				<div style="margin-top:6px;font-size:12px;color:var(--text-muted);">
-					${timeInfo} | Stages: ${status.stage_count || 0} | Retries: ${status.retry_count}
+					${timeInfo} | Stages: ${status.stage_count || 0} | Retries: ${status.retry_count}${status.llm_models_used && status.llm_models_used.length > 0 ? ' | LLM: <code>' + esc(status.llm_models_used.join(', ')) + '</code>' : ''}
 				</div>
 				${promptPreview ? '<div class="current-prompt-preview">' + promptPreview + '</div>' : ''}
 				${resultPreview && status.is_terminal ? '<div class="current-prompt-preview" style="color:var(--success);">' + resultPreview + '</div>' : ''}

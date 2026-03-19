@@ -439,6 +439,18 @@ pipelineRouter.get("/:id/cycle/status", async (c) => {
 	const stages = await stageRepo.findByPipelineId(pipeline.pipeline_id);
 	const latestStage = stages.length > 0 ? stages[stages.length - 1] : null;
 
+	// Extract LLM models from REPORTING stage
+	const reportingStage = stages.find((s) => s.stage === "REPORTING" && s.result_full);
+	let llmModels: string[] = [];
+	if (reportingStage?.result_full) {
+		try {
+			const rd = JSON.parse(reportingStage.result_full);
+			llmModels = rd.llm_models_used ?? [];
+		} catch {
+			/* ignore */
+		}
+	}
+
 	return c.json({
 		pipeline_id: pipeline.pipeline_id,
 		stage: pipeline.stage,
@@ -450,6 +462,7 @@ pipelineRouter.get("/:id/cycle/status", async (c) => {
 		current_prompt: latestStage?.prompt_summary ?? null,
 		current_result: latestStage?.result_summary ?? null,
 		stage_count: stages.length,
+		llm_models_used: llmModels,
 	});
 });
 
