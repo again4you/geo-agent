@@ -1109,6 +1109,18 @@ function renderOverviewTab(data, ed) {
 	}
 	html += '</div>';
 
+	// LLM Model Info
+	if (data.llm_models_used && data.llm_models_used.length > 0) {
+		html += '<div class="card" style="padding:12px 16px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;">';
+		html += '<div style="font-size:12px;color:var(--text-muted);">🤖 사용된 LLM 모델:</div>';
+		for (var mi = 0; mi < data.llm_models_used.length; mi++) {
+			html += '<code style="background:rgba(59,130,246,0.15);color:#93C5FD;padding:2px 8px;border-radius:4px;font-size:12px;">' + esc(data.llm_models_used[mi]) + '</code>';
+		}
+		html += '</div>';
+	} else {
+		html += '<div class="card" style="padding:12px 16px;font-size:12px;color:var(--warning);">⚠️ LLM 미사용 — 규칙 기반 분석 결과입니다. LLM Providers 탭에서 API Key를 설정하면 더 정확한 분석이 가능합니다.</div>';
+	}
+
 	// 7-Dimension Scores
 	if (data.dimensions && data.dimensions.length > 0) {
 		html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">';
@@ -1586,12 +1598,15 @@ function renderPipelineTab(data) {
 }
 
 function buildLLMLogTab(data) {
-	// This tab loads on demand when clicked
+	// Auto-load LLM Call Log
+	setTimeout(loadLLMCallLog, 0);
 	return '<div class="card" id="llmLogContainer">' +
 		'<h3 style="font-size:14px;margin-bottom:12px;">🔎 LLM Call Log</h3>' +
-		'<p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">디버깅용: 파이프라인에서 LLM에 보낸 모든 요청과 응답을 시간순으로 표시합니다.</p>' +
-		'<button class="btn btn-primary btn-sm" onclick="loadLLMCallLog()">Load LLM Call Log</button>' +
-		'<div id="llmLogContent" style="margin-top:12px;"></div>' +
+		'<p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">파이프라인에서 LLM에 보낸 모든 요청과 응답을 시간순으로 표시합니다. 각 행을 클릭하면 상세 내용을 볼 수 있습니다.</p>' +
+		'<div style="display:flex;gap:8px;margin-bottom:12px;">' +
+		'<button class="btn btn-primary btn-sm" onclick="loadLLMCallLog()">🔄 Refresh</button>' +
+		'</div>' +
+		'<div id="llmLogContent"><div style="color:var(--text-muted);font-size:12px;">Loading...</div></div>' +
 		'</div>';
 }
 

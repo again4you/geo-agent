@@ -415,7 +415,7 @@ pipelineRouter.get("/:id/pipeline/:pipelineId/evaluation", async (c) => {
 		? ((final_data.after as number) ?? ((final_data.delta as number) ?? 0) + initialScore)
 		: initialScore;
 
-	// Extract LLM models from REPORTING stage result_full
+	// Extract LLM models from REPORTING stage, then scan all stages
 	const reportingStage = stages.find((s) => s.stage === "REPORTING" && s.result_full);
 	let llmModelsUsed: string[] = [];
 	let llmErrors: string[] = [];
@@ -427,6 +427,25 @@ pipelineRouter.get("/:id/pipeline/:pipelineId/evaluation", async (c) => {
 		} catch {
 			/* ignore */
 		}
+	}
+	// Fallback: scan all stages for llm_call_log entries (for in-progress pipelines)
+	if (llmModelsUsed.length === 0) {
+		const modelSet = new Set<string>();
+		for (const s of stages) {
+			if (!s.result_full) continue;
+			try {
+				const rf = JSON.parse(s.result_full);
+				if (Array.isArray(rf.llm_call_log)) {
+					for (const entry of rf.llm_call_log) {
+						if (entry.provider && entry.model) modelSet.add(`${entry.provider}/${entry.model}`);
+					}
+				}
+				if (Array.isArray(rf.llm_models_used)) {
+					for (const m of rf.llm_models_used) modelSet.add(m);
+				}
+			} catch { /* ignore */ }
+		}
+		llmModelsUsed = Array.from(modelSet);
 	}
 
 	return c.json({
