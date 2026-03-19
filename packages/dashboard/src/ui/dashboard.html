@@ -211,7 +211,10 @@ tr:hover td { background: var(--surface2); }
 <body>
 <div class="header">
 	<h1>GEO Agent Dashboard</h1>
-	<div class="status" id="connectionStatus">Connecting...</div>
+	<div style="display:flex;align-items:center;gap:12px;">
+		<span id="versionInfo" style="font-size:10px;color:var(--text-muted);font-family:monospace;"></span>
+		<div class="status" id="connectionStatus">Connecting...</div>
+	</div>
 </div>
 <div class="nav">
 	<button class="active" data-tab="targets">Targets</button>
@@ -328,7 +331,7 @@ tr:hover td { background: var(--surface2); }
 		<h2 id="promptModalTitle">Edit Prompt</h2>
 		<input type="hidden" id="promptEditId">
 		<div class="form-group">
-			<label>System Prompt</label>
+			<label>System Instruction</label>
 			<textarea id="promptText" rows="12"></textarea>
 		</div>
 		<div class="actions">
@@ -347,6 +350,10 @@ tr:hover td { background: var(--surface2); }
 		<div class="form-group">
 			<label>API Key</label>
 			<input type="password" id="llmApiKey" placeholder="sk-...">
+		</div>
+		<div class="form-group">
+			<label>API Base URL <span style="font-size:11px;color:var(--text-muted);">(optional, for Azure/custom endpoints)</span></label>
+			<input type="text" id="llmBaseUrl" placeholder="https://uksouth.openai.azure.com">
 		</div>
 		<div class="form-group">
 			<label>Default Model</label>
@@ -455,7 +462,7 @@ function renderTargets() {
 		<td><strong>${esc(t.name)}</strong></td>
 		<td style="color:var(--text-muted);font-size:12px;">${esc(t.url)}</td>
 		<td><span class="badge badge-blue">${t.site_type || 'generic'}</span></td>
-		<td><span class="badge ${t.is_active ? 'badge-green' : 'badge-gray'}">${t.is_active ? 'Active' : 'Inactive'}</span></td>
+		<td><span class="badge ${t.status === 'active' ? 'badge-green' : t.status === 'paused' ? 'badge-yellow' : 'badge-gray'}">${t.status || 'active'}</span></td>
 		<td style="color:var(--text-muted);font-size:12px;">${new Date(t.created_at).toLocaleDateString()}</td>
 		<td style="text-align:right;">
 			<button class="btn btn-ghost btn-sm" onclick="editTarget('${t.id}')">Edit</button>
@@ -656,6 +663,13 @@ function initSSE() {
 			loadPipelines();
 		});
 
+		sseSource.addEventListener('pipeline:llm-warning', function(e) {
+			var data = JSON.parse(e.data);
+			var errMsg = '⚠️ LLM errors (' + data.errors.length + '): ' + data.errors[0].slice(0, 100);
+			if (data.errors.length > 1) errMsg += ' (+' + (data.errors.length - 1) + ' more)';
+			showToast(errMsg, 8000);
+		});
+
 		sseSource.onerror = function() {
 			// SSE disconnected — fall back to polling
 			console.warn('SSE disconnected, falling back to polling');
@@ -847,6 +861,17 @@ async function loadEvaluation() {
 			// Add LLM models info to status header
 			if (evalData.llm_models_used && evalData.llm_models_used.length > 0) {
 				statusHtml = statusHtml.replace('</div></div>', ' · LLM: <code>' + esc(evalData.llm_models_used.join(', ')) + '</code></div></div>');
+			}
+			// Show LLM errors prominently
+			if (evalData.llm_errors && evalData.llm_errors.length > 0) {
+				var errHtml = '<div class="card" style="padding:12px 16px;margin-bottom:16px;border:1px solid var(--danger);background:rgba(239,68,68,0.1);">';
+				errHtml += '<div style="color:var(--danger);font-weight:600;margin-bottom:4px;">⚠️ LLM Errors (' + evalData.llm_errors.length + ')</div>';
+				errHtml += '<div style="font-size:12px;color:var(--text-muted);">LLM calls failed — results are rule-based only. Check model name and API key settings.</div>';
+				errHtml += '<ul style="margin:8px 0 0 16px;font-size:12px;">';
+				evalData.llm_errors.slice(0, 3).forEach(function(e) { errHtml += '<li>' + esc(e.slice(0, 150)) + '</li>'; });
+				if (evalData.llm_errors.length > 3) errHtml += '<li>... +' + (evalData.llm_errors.length - 3) + ' more</li>';
+				errHtml += '</ul></div>';
+				statusHtml += errHtml;
 			}
 			container.innerHTML = statusHtml;
 			var evalDiv = document.createElement('div');
@@ -1594,6 +1619,7 @@ function editLLMProvider(id) {
 	document.getElementById('llmModalTitle').textContent = 'Edit: ' + p.display_name;
 	document.getElementById('llmEditId').value = id;
 	document.getElementById('llmApiKey').value = '';
+	document.getElementById('llmBaseUrl').value = p.api_base_url || '';
 	document.getElementById('llmModel').value = p.default_model || '';
 	document.getElementById('llmMaxTokens').value = p.max_tokens || '';
 	document.getElementById('llmTemp').value = p.temperature ?? '';
@@ -1604,6 +1630,7 @@ async function saveLLMProvider() {
 	const id = document.getElementById('llmEditId').value;
 	const body = {
 		default_model: document.getElementById('llmModel').value,
+		api_base_url: document.getElementById('llmBaseUrl').value || undefined,
 		max_tokens: Number(document.getElementById('llmMaxTokens').value) || undefined,
 		temperature: Number(document.getElementById('llmTemp').value) || undefined,
 	};
@@ -1631,6 +1658,12 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s || 
 
 // ── Init ─────────────────────────────────────────────
 checkHealth();
+
+// Load version info
+api('/api/version').then(function(v) {
+	document.getElementById('versionInfo').textContent = v.short + ' · ' + v.date.split(' ')[0];
+	document.getElementById('versionInfo').title = 'Commit: ' + v.sha + '\nDate: ' + v.date;
+}).catch(function() { /* ignore */ });
 
 // Restore active tab from URL hash, default to 'targets'
 var initTab = (window.location.hash || '').replace('#', '') || 'targets';

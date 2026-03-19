@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -137,10 +138,23 @@ app.get("/dashboard", (c) => {
 });
 
 // Root — API info + dashboard link
+// ── Git version info (cached at startup) ─────────────────────
+let gitInfo = { sha: "unknown", date: "unknown", short: "unknown" };
+try {
+	const sha = execSync("git rev-parse HEAD", { encoding: "utf-8" }).trim();
+	const date = execSync("git log -1 --format=%ci", { encoding: "utf-8" }).trim();
+	gitInfo = { sha, date, short: sha.slice(0, 7) };
+} catch {
+	// Not a git repo or git not available
+}
+
+app.get("/api/version", (c) => c.json(gitInfo));
+
 app.get("/", (c) =>
 	c.json({
 		name: "GEO Agent Dashboard",
 		version: "0.3.0",
+		git: gitInfo,
 		dashboard: "/dashboard",
 		endpoints: [
 			"/health",

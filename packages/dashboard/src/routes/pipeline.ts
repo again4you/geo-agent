@@ -232,6 +232,17 @@ async function executePipelineAsync(
 				result.llm_models_used.length > 0
 					? ` LLM: ${result.llm_models_used.join(", ")}`
 					: " (no LLM)";
+			if (result.llm_errors.length > 0) {
+				console.warn(`⚠️ LLM errors during pipeline (${result.llm_errors.length} unique):`);
+				for (const e of result.llm_errors.slice(0, 5)) {
+					console.warn(`   - ${e.slice(0, 200)}`);
+				}
+				broadcastSSE("pipeline:llm-warning", {
+					target_id: targetId,
+					pipeline_id: pipelineId,
+					errors: result.llm_errors.slice(0, 5),
+				});
+			}
 			console.log(
 				`✅ Pipeline completed for ${targetId}: ${result.initial_score} → ${result.final_score} (+${result.delta}) [${result.cycles_completed} cycles]${modelsStr}`,
 			);
@@ -365,10 +376,12 @@ pipelineRouter.get("/:id/pipeline/:pipelineId/evaluation", async (c) => {
 	// Extract LLM models from REPORTING stage result_full
 	const reportingStage = stages.find((s) => s.stage === "REPORTING" && s.result_full);
 	let llmModelsUsed: string[] = [];
+	let llmErrors: string[] = [];
 	if (reportingStage?.result_full) {
 		try {
 			const reportData = JSON.parse(reportingStage.result_full);
 			llmModelsUsed = reportData.llm_models_used ?? [];
+			llmErrors = reportData.llm_errors ?? [];
 		} catch {
 			/* ignore */
 		}
@@ -387,6 +400,7 @@ pipelineRouter.get("/:id/pipeline/:pipelineId/evaluation", async (c) => {
 		synthetic_probes: initial.synthetic_probes ?? null,
 		validation: final_data,
 		llm_models_used: llmModelsUsed,
+		llm_errors: llmErrors,
 		stages: stages.map((s) => ({
 			stage: s.stage,
 			status: s.status,

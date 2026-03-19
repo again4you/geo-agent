@@ -6,11 +6,13 @@ export const targets = sqliteTable("targets", {
 	url: text("url").notNull(),
 	name: text("name").notNull(),
 	description: text("description").notNull().default(""),
+	brand: text("brand").notNull().default(""),
 	topics: text("topics", { mode: "json" }).notNull().default("[]"), // string[]
 	target_queries: text("target_queries", { mode: "json" }).notNull().default("[]"),
 	audience: text("audience").notNull().default(""),
 	competitors: text("competitors", { mode: "json" }).notNull().default("[]"),
 	business_goal: text("business_goal").notNull().default(""),
+	target_score: real("target_score"),
 	llm_priorities: text("llm_priorities", { mode: "json" }).notNull().default("[]"),
 	clone_base_path: text("clone_base_path"),
 	site_type: text("site_type").notNull().default("generic"),

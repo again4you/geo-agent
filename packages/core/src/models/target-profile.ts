@@ -33,11 +33,13 @@ export const TargetProfileSchema = z.object({
 
 	// Business context
 	description: z.string().default(""),
+	brand: z.string().default(""),
 	topics: z.array(z.string()).default([]),
 	target_queries: z.array(z.string()).default([]),
 	audience: z.string().default(""),
 	competitors: z.array(CompetitorEntrySchema).default([]),
 	business_goal: z.string().default(""),
+	target_score: z.number().min(0).max(100).nullable().default(null),
 
 	// LLM settings
 	llm_priorities: z.array(LLMPrioritySchema).default([]),
@@ -64,11 +66,13 @@ export const CreateTargetSchema = TargetProfileSchema.pick({
 	name: true,
 }).extend({
 	description: z.string().optional(),
+	brand: z.string().optional(),
 	topics: z.array(z.string()).optional(),
 	target_queries: z.array(z.string()).optional(),
 	audience: z.string().optional(),
 	competitors: z.array(CompetitorEntrySchema).optional(),
 	business_goal: z.string().optional(),
+	target_score: z.number().min(0).max(100).nullable().optional(),
 	llm_priorities: z.array(LLMPrioritySchema).optional(),
 	clone_base_path: z.string().nullable().optional(),
 	site_type: SiteTypeSchema.optional(),

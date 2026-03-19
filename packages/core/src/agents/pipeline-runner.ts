@@ -66,6 +66,7 @@ export interface PipelineResult {
 	report_path: string | null;
 	dashboard_html: string | null;
 	llm_models_used: string[];
+	llm_errors: string[];
 	error?: string;
 }
 
@@ -127,13 +128,20 @@ export async function runPipeline(
 	let cycleCount = 0;
 	let probeResults: SyntheticProbeRunResult | null = null;
 	const llmModelsUsed = new Set<string>();
+	const llmErrors: string[] = [];
 
-	// Wrap chatLLM to track which models are actually used
+	// Wrap chatLLM to track which models are actually used + collect errors
 	const trackedChatLLM = deps.chatLLM
 		? async (req: LLMRequest): Promise<LLMResponse> => {
-				const response = await deps.chatLLM!(req);
-				llmModelsUsed.add(`${response.provider}/${response.model}`);
-				return response;
+				try {
+					const response = await deps.chatLLM!(req);
+					llmModelsUsed.add(`${response.provider}/${response.model}`);
+					return response;
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					llmErrors.push(msg);
+					throw err; // Re-throw so safeLLMCall can handle fallback
+				}
 			}
 		: undefined;
 
@@ -556,6 +564,7 @@ export async function runPipeline(
 					initial: initialScore,
 					final: currentScore,
 					llm_models_used: Array.from(llmModelsUsed),
+					llm_errors: [...new Set(llmErrors)],
 				};
 			},
 			(out) =>
@@ -576,6 +585,7 @@ export async function runPipeline(
 			report_path: reportPath,
 			dashboard_html: dashboardHtml,
 			llm_models_used: Array.from(llmModelsUsed),
+			llm_errors: [...new Set(llmErrors)],
 			error: result.finalState.error_message ?? undefined,
 		};
 	} catch (err) {
@@ -588,6 +598,7 @@ export async function runPipeline(
 			report_path: null,
 			dashboard_html: null,
 			llm_models_used: Array.from(llmModelsUsed),
+			llm_errors: [...new Set(llmErrors)],
 			error: err instanceof Error ? err.message : String(err),
 		};
 	}

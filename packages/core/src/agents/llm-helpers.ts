@@ -15,6 +15,7 @@ export interface SafeLLMResult<T> {
 	result: T;
 	llm_used: boolean;
 	latency_ms?: number;
+	error?: string;
 }
 
 /**
@@ -32,8 +33,9 @@ export async function safeLLMCall<T>(
 		const response = await chatLLM(request);
 		const parsed = parser(response.content);
 		return { result: parsed, llm_used: true, latency_ms: response.latency_ms };
-	} catch {
-		return { result: fallback, llm_used: false };
+	} catch (err) {
+		const errorMsg = err instanceof Error ? err.message : String(err);
+		return { result: fallback, llm_used: false, error: errorMsg };
 	}
 }
 
