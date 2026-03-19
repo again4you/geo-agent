@@ -10,7 +10,10 @@
 import { v4 as uuidv4 } from "uuid";
 import type { LLMRequest, LLMResponse } from "../llm/geo-llm-client.js";
 import type { AnalysisReport } from "../models/analysis-report.js";
+import type { ChangeType } from "../models/change-type.js";
 import type { OptimizationPlan, OptimizationTask } from "../models/optimization-plan.js";
+import { safeLLMCall, parseJsonResponse } from "./llm-helpers.js";
+import { StrategyLLMResponseSchema } from "./llm-response-schemas.js";
 
 // ── Strategy Input/Output ───────────────────────────────────
 
@@ -193,25 +196,102 @@ export async function runStrategy(
 		`현재 GEO 점수: ${analysis_report.current_geo_score.total}/100. ` +
 		`구조화 데이터 점수: ${analysis_report.current_geo_score.structured_score}/100.`;
 
+	let llmEstimatedDelta: number | null = null;
+	let llmConfidence: number | null = null;
+
 	if (input.use_llm && deps?.chatLLM) {
-		try {
-			const llmResponse = await deps.chatLLM({
-				prompt: `다음 GEO 분석 결과를 바탕으로 최적화 전략 요약을 한국어로 작성하세요:\n- 전체 점수: ${analysis_report.current_geo_score.total}/100\n- 구조화 데이터: ${analysis_report.structured_data.json_ld_present ? "있음" : "없음"}\n- 헤딩 구조: ${analysis_report.machine_readability.structure_quality.heading_hierarchy_valid ? "정상" : "비정상"}\n- 콘텐츠 단어 수: ${analysis_report.content_analysis.word_count}\n- 생성된 태스크: ${tasks.map((t) => t.title).join(", ")}`,
-				system_instruction: "GEO 최적화 전문가로서 간결하게 전략 요약을 작성하세요.",
-				json_mode: false,
+		const geoScores = analysis_report.current_geo_score;
+		const structuredData = analysis_report.structured_data;
+		const contentAnalysis = analysis_report.content_analysis;
+		const machineReadability = analysis_report.machine_readability;
+
+		const prompt = `You are a GEO (Generative Engine Optimization) strategist. Analyze the following website assessment and generate a complete optimization strategy with prioritized tasks.
+
+## Current GEO Scores
+- Total: ${geoScores.total}/100
+- Citation Rate: ${geoScores.citation_rate}/100
+- Citation Accuracy: ${geoScores.citation_accuracy}/100
+- Info Recognition: ${geoScores.info_recognition_score}/100
+- Coverage: ${geoScores.coverage}/100
+- Rank Position: ${geoScores.rank_position}/100
+- Structured Score: ${geoScores.structured_score}/100
+
+## Structured Data Status
+- JSON-LD present: ${structuredData.json_ld_present}
+- Schema completeness: ${structuredData.schema_completeness}
+- OG tags present: ${structuredData.og_tags_present}
+- Meta description: ${structuredData.meta_description ? "present" : "missing"}
+
+## Content Analysis
+- Word count: ${contentAnalysis.word_count}
+- Readability level: ${contentAnalysis.readability_level}
+
+## Machine Readability
+- Grade: ${machineReadability.grade}
+- Heading hierarchy valid: ${machineReadability.structure_quality.heading_hierarchy_valid}
+- Semantic tag ratio: ${machineReadability.structure_quality.semantic_tag_ratio}
+
+## Existing Rule-Based Tasks
+${tasks.map((t) => `- [${t.priority}] ${t.title}: ${t.description}`).join("\n")}
+
+Generate a complete strategy as JSON. Include tasks that address the most impactful improvements. Use change_type values from: METADATA, SCHEMA_MARKUP, LLMS_TXT, SEMANTIC_STRUCTURE, CONTENT_DENSITY, FAQ_SECTION, INTERNAL_LINKING, IMAGE_ALT, CANONICAL, SITEMAP.`;
+
+		const { result: llmStrategy, llm_used } = await safeLLMCall(
+			deps.chatLLM,
+			{
+				prompt,
+				system_instruction:
+					'You are a GEO optimization expert. Respond with JSON only:\n{"strategy_rationale":"detailed explanation","tasks":[{"change_type":"SCHEMA_MARKUP","title":"...","description":"specific instructions","target_element":null,"priority":"critical","expected_impact":"...","specific_data":{}}],"estimated_delta":15,"confidence":0.7}',
+				json_mode: true,
+				temperature: 0.2,
+				max_tokens: 3000,
+			},
+			(content) => parseJsonResponse(content, StrategyLLMResponseSchema),
+			null,
+		);
+
+		if (llm_used && llmStrategy) {
+			strategyRationale = llmStrategy.strategy_rationale;
+			llmEstimatedDelta = llmStrategy.estimated_delta ?? 0;
+			llmConfidence = llmStrategy.confidence ?? 0.5;
+
+			// Merge LLM tasks with rule-based tasks (LLM tasks take precedence, deduplicate by change_type)
+			const llmTasks: OptimizationTask[] = llmStrategy.tasks.map((lt) => ({
+				task_id: uuidv4(),
+				change_type: lt.change_type as ChangeType,
+				title: lt.title,
+				description: lt.description,
+				target_element: lt.target_element ?? null,
+				priority: lt.priority,
+				info_recognition_ref: null,
+				order: 0,
+				status: "pending" as const,
+				change_record_ref: null,
+			}));
+
+			// LLM tasks take precedence: remove rule-based tasks that share a change_type with LLM tasks
+			const llmChangeTypes = new Set(llmTasks.map((t) => t.change_type));
+			const filteredRuleTasks = tasks.filter((t) => !llmChangeTypes.has(t.change_type));
+
+			// Combine: LLM tasks first, then remaining rule-based tasks
+			tasks.length = 0;
+			tasks.push(...llmTasks, ...filteredRuleTasks);
+
+			// Re-sort by priority and re-index
+			tasks.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
+			tasks.forEach((t, i) => {
+				t.order = i;
 			});
-			strategyRationale = llmResponse.content;
-		} catch {
-			// LLM 실패 시 규칙 기반 설명 유지
 		}
 	}
 
 	// 4. 영향도 추정
 	const criticalCount = tasks.filter((t) => t.priority === "critical").length;
 	const highCount = tasks.filter((t) => t.priority === "high").length;
-	const estimatedDelta =
+	const ruleBasedDelta =
 		criticalCount * 8 + highCount * 5 + (tasks.length - criticalCount - highCount) * 2;
-	const confidence = Math.min(0.3 + tasks.length * 0.05, 0.8);
+	const estimatedDelta = llmEstimatedDelta ?? ruleBasedDelta;
+	const confidence = llmConfidence ?? Math.min(0.3 + tasks.length * 0.05, 0.8);
 
 	const plan: OptimizationPlan = {
 		plan_id: uuidv4(),

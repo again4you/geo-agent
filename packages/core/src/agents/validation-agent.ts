@@ -5,6 +5,9 @@
  * Before-After 비교 결과를 생성하고, 추가 사이클 필요 여부 결정.
  */
 import type { CrawlData, PageScoreResult } from "./types.js";
+import type { LLMRequest, LLMResponse } from "../llm/geo-llm-client.js";
+import { safeLLMCall, truncateHtml, parseJsonResponse } from "./llm-helpers.js";
+import { ValidationVerdictSchema, type ValidationVerdict } from "./llm-response-schemas.js";
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -56,7 +59,15 @@ export interface ValidationOutput {
 	/** 멀티 페이지 after 점수 (멀티 페이지 모드) */
 	after_page_scores?: PageScoreResult[];
 	/** 페이지별 delta (멀티 페이지 모드) */
-	page_deltas?: Array<{ url: string; filename: string; before: number; after: number; delta: number }>;
+	page_deltas?: Array<{
+		url: string;
+		filename: string;
+		before: number;
+		after: number;
+		delta: number;
+	}>;
+	/** LLM 품질 검증 결과 (chatLLM 없으면 null) */
+	llm_verdict: ValidationVerdict | null;
 }
 
 // ── Validation Agent 실행 ────────────────────────────────────
@@ -78,6 +89,8 @@ export interface ValidationDeps {
 	};
 	/** 멀티 페이지: 클론의 모든 페이지를 CrawlData로 반환 */
 	crawlClonePages?: () => Promise<Array<{ filename: string; crawl_data: CrawlData }>>;
+	/** LLM 기반 품질 검증 (선택) */
+	chatLLM?: (req: LLMRequest) => Promise<LLMResponse>;
 }
 
 export async function runValidation(
@@ -111,16 +124,13 @@ export async function runValidation(
 		const totalWeight = weights.reduce((a, b) => a + b, 0);
 		effectiveAfterScore =
 			Math.round(
-				(allAfter.reduce((s, p, i) => s + p.scores.overall_score * weights[i], 0) /
-					totalWeight) *
+				(allAfter.reduce((s, p, i) => s + p.scores.overall_score * weights[i], 0) / totalWeight) *
 					10,
 			) / 10;
 
 		// 페이지별 delta
 		pageDeltas = afterPageScores.map((after) => {
-			const before = input.before_page_scores!.find(
-				(b) => b.filename === after.filename,
-			);
+			const before = input.before_page_scores!.find((b) => b.filename === after.filename);
 			return {
 				url: after.url,
 				filename: after.filename,
@@ -165,6 +175,37 @@ export async function runValidation(
 		stopReason = `max_cycles: ${input.cycle_number + 1} >= ${maxCycles}`;
 	}
 
+	// 6. LLM 품질 검증 (선택)
+	let llmVerdict: ValidationVerdict | null = null;
+	if (deps.chatLLM) {
+		try {
+			const { result } = await safeLLMCall(
+				deps.chatLLM,
+				{
+					prompt: `Compare the optimization results. Score changed from ${input.before_score} to ${effectiveAfterScore} (delta: ${delta}).\n\nDimension changes:\n${dimensionDeltas.map((d) => `${d.label}: ${d.before} → ${d.after} (${d.delta >= 0 ? "+" : ""}${d.delta})`).join("\n")}\n\nAssess the optimization quality.`,
+					system_instruction:
+						'You are a GEO validation expert. Assess optimization quality. Respond with JSON:\n{"improved_aspects":["string"],"remaining_issues":["string"],"llm_friendliness_verdict":"much_better|better|marginally_better|no_change|worse","specific_recommendations":["string"],"confidence":0.0-1.0}',
+					json_mode: true,
+					temperature: 0.1,
+					max_tokens: 1500,
+				},
+				(content) => parseJsonResponse(content, ValidationVerdictSchema),
+				null,
+			);
+			if (result) {
+				llmVerdict = {
+					improved_aspects: result.improved_aspects ?? [],
+					remaining_issues: result.remaining_issues ?? [],
+					llm_friendliness_verdict: result.llm_friendliness_verdict,
+					specific_recommendations: result.specific_recommendations ?? [],
+					confidence: result.confidence ?? 0.5,
+				};
+			}
+		} catch {
+			// Non-fatal
+		}
+	}
+
 	return {
 		after_score: effectiveAfterScore,
 		after_grade: afterScores.grade,
@@ -176,5 +217,6 @@ export async function runValidation(
 		dimension_deltas: dimensionDeltas,
 		after_page_scores: afterPageScores,
 		page_deltas: pageDeltas,
+		llm_verdict: llmVerdict,
 	};
 }

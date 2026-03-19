@@ -7,6 +7,7 @@ import type { LLMRequest, LLMResponse } from "../llm/geo-llm-client.js";
  * - LLM 강화 수정 (선택): 콘텐츠 개선, 설명 보강 등
  */
 import type { OptimizationPlan, OptimizationTask } from "../models/optimization-plan.js";
+import { safeLLMCall, extractVisibleText, extractTitle, escapeHtml } from "./llm-helpers.js";
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -45,6 +46,7 @@ async function getHtmlFiles(input: OptimizationInput): Promise<string[]> {
 async function optimizeMetadata(
 	task: OptimizationTask,
 	input: OptimizationInput,
+	deps?: { chatLLM?: (req: LLMRequest) => Promise<LLMResponse> },
 ): Promise<{ success: boolean; files_modified: string[]; error?: string }> {
 	const htmlFiles = await getHtmlFiles(input);
 	const modified: string[] = [];
@@ -66,9 +68,34 @@ async function optimizeMetadata(
 
 			if (task.title.includes("Meta description") || task.title.includes("메타")) {
 				if (!/<meta\s+name=["']description["']/i.test(html)) {
+					const fallbackDesc = "Optimized page description for LLM discoverability";
+					let description = fallbackDesc;
+
+					if (deps?.chatLLM) {
+						const pageText = extractVisibleText(html).slice(0, 1500);
+						const pageTitle = extractTitle(html);
+						const { result } = await safeLLMCall(
+							deps.chatLLM,
+							{
+								prompt: `Write a concise meta description (max 160 characters) for this web page.\n\nTitle: ${pageTitle}\n\nContent excerpt:\n${pageText}`,
+								system_instruction:
+									"You are an SEO expert specializing in LLM discoverability. Write a single meta description that is factual, keyword-rich, and optimized for AI engines. Output ONLY the description text, no quotes or labels. Keep it under 160 characters.",
+								json_mode: false,
+								temperature: 0.3,
+								max_tokens: 200,
+							},
+							(content) => {
+								const trimmed = content.trim().replace(/^["']|["']$/g, "");
+								return trimmed.length > 160 ? `${trimmed.slice(0, 157)}...` : trimmed;
+							},
+							fallbackDesc,
+						);
+						description = result;
+					}
+
 					html = html.replace(
 						"</head>",
-						'<meta name="description" content="Optimized page description for LLM discoverability">\n</head>',
+						`<meta name="description" content="${escapeHtml(description)}">\n</head>`,
 					);
 					fileModified = true;
 				}
@@ -77,9 +104,32 @@ async function optimizeMetadata(
 			if (task.title.includes("Open Graph") || task.title.includes("OG")) {
 				if (!/<meta\s+property=["']og:/i.test(html)) {
 					const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || "Page";
+					let ogDescription = "";
+
+					if (deps?.chatLLM) {
+						const pageText = extractVisibleText(html).slice(0, 1500);
+						const { result } = await safeLLMCall(
+							deps.chatLLM,
+							{
+								prompt: `Write a compelling Open Graph description (max 200 characters) for social sharing of this page.\n\nTitle: ${title.trim()}\n\nContent excerpt:\n${pageText}`,
+								system_instruction:
+									"You are a social media optimization expert. Write a single OG description that encourages clicks and shares. Output ONLY the description text, no quotes or labels. Keep it under 200 characters.",
+								json_mode: false,
+								temperature: 0.3,
+								max_tokens: 200,
+							},
+							(content) => content.trim().replace(/^["']|["']$/g, ""),
+							"",
+						);
+						ogDescription = result;
+					}
+
+					const ogDescTag = ogDescription
+						? `\n<meta property="og:description" content="${escapeHtml(ogDescription)}">`
+						: "";
 					html = html.replace(
 						"</head>",
-						`<meta property="og:title" content="${title.trim()}">\n<meta property="og:type" content="website">\n</head>`,
+						`<meta property="og:title" content="${escapeHtml(title.trim())}">\n<meta property="og:type" content="website">${ogDescTag}\n</head>`,
 					);
 					fileModified = true;
 				}
@@ -100,6 +150,7 @@ async function optimizeMetadata(
 async function optimizeSchemaMarkup(
 	_task: OptimizationTask,
 	input: OptimizationInput,
+	deps?: { chatLLM?: (req: LLMRequest) => Promise<LLMResponse> },
 ): Promise<{ success: boolean; files_modified: string[]; error?: string }> {
 	const htmlFiles = await getHtmlFiles(input);
 	const modified: string[] = [];
@@ -109,17 +160,54 @@ async function optimizeSchemaMarkup(
 			let html = await input.readFile(htmlFile);
 
 			if (!/<script\s+type=["']application\/ld\+json["']/i.test(html)) {
-				const jsonLd = {
+				const pageTitle = extractTitle(html) || "Page";
+				const metaDesc =
+					(html.match(/<meta\s+name=["']description["']\s+content=["']([^"']*)["']/i) || [])[1] ||
+					"";
+
+				const fallbackJsonLd = {
 					"@context": "https://schema.org",
 					"@type": "WebPage",
-					name: (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1]?.trim() || "Page",
-					description:
-						(html.match(/<meta\s+name=["']description["']\s+content=["']([^"']*)["']/i) || [])[1] ||
-						"",
+					name: pageTitle,
+					description: metaDesc,
 				};
+
+				let jsonLdStr = JSON.stringify(fallbackJsonLd);
+
+				if (deps?.chatLLM) {
+					const pageText = extractVisibleText(html).slice(0, 1500);
+					// Check for existing JSON-LD in other script tags (partial matches)
+					const existingLdMatches = html.match(
+						/<script\s+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi,
+					);
+					const existingLd = existingLdMatches ? existingLdMatches.join("\n") : "None";
+
+					const { result } = await safeLLMCall(
+						deps.chatLLM,
+						{
+							prompt: `Generate a rich JSON-LD (schema.org) structured data object for this web page.\n\nTitle: ${pageTitle}\nMeta description: ${metaDesc}\nExisting JSON-LD: ${existingLd}\n\nContent excerpt:\n${pageText}`,
+							system_instruction:
+								"You are a structured data expert. Generate a single JSON-LD object using schema.org vocabulary. Choose the most appropriate @type (WebPage, Product, Article, Organization, etc.) based on the content. Include as many relevant properties as the content supports (name, description, url, image, author, datePublished, etc.). Output ONLY valid JSON, no markdown fences or explanation.",
+							json_mode: true,
+							temperature: 0.3,
+							max_tokens: 800,
+						},
+						(content) => {
+							// Validate it's parseable JSON with @context
+							const parsed = JSON.parse(content.trim());
+							if (!parsed["@context"]) {
+								parsed["@context"] = "https://schema.org";
+							}
+							return JSON.stringify(parsed);
+						},
+						jsonLdStr,
+					);
+					jsonLdStr = result;
+				}
+
 				html = html.replace(
 					"</head>",
-					`<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>\n</head>`,
+					`<script type="application/ld+json">${jsonLdStr}</script>\n</head>`,
 				);
 				await input.writeFile(htmlFile, html);
 				modified.push(htmlFile);
@@ -135,12 +223,47 @@ async function optimizeSchemaMarkup(
 async function optimizeLlmsTxt(
 	_task: OptimizationTask,
 	input: OptimizationInput,
+	deps?: { chatLLM?: (req: LLMRequest) => Promise<LLMResponse> },
 ): Promise<{ success: boolean; files_modified: string[]; error?: string }> {
+	const fallbackContent =
+		"# Site Information\n\nThis site provides information about products and services.\n\n## Key Content\n- Products and specifications\n- Pricing information\n- Company information\n";
+
 	try {
-		await input.writeFile(
-			"llms.txt",
-			"# Site Information\n\nThis site provides information about products and services.\n\n## Key Content\n- Products and specifications\n- Pricing information\n- Company information\n",
-		);
+		let content = fallbackContent;
+
+		if (deps?.chatLLM) {
+			// Gather summaries from available HTML pages
+			const htmlFiles = await getHtmlFiles(input);
+			const pageSummaries: string[] = [];
+
+			for (const htmlFile of htmlFiles.slice(0, 5)) {
+				try {
+					const html = await input.readFile(htmlFile);
+					const title = extractTitle(html) || htmlFile;
+					const text = extractVisibleText(html).slice(0, 300);
+					pageSummaries.push(`- ${htmlFile}: "${title}" — ${text}`);
+				} catch {
+					pageSummaries.push(`- ${htmlFile}: (could not read)`);
+				}
+			}
+
+			const { result } = await safeLLMCall(
+				deps.chatLLM,
+				{
+					prompt: `Generate an llms.txt file for a website with these pages:\n\n${pageSummaries.join("\n")}\n\nTotal pages: ${htmlFiles.length}`,
+					system_instruction:
+						"You are a GEO (Generative Engine Optimization) expert. Generate an llms.txt file that helps LLMs understand this site. Use markdown format with: a top-level heading with the site name, a brief description, then sections for key content areas, important pages, and any structured data available. Be specific to the actual site content — do not use generic boilerplate. Output ONLY the llms.txt content.",
+					json_mode: false,
+					temperature: 0.3,
+					max_tokens: 500,
+				},
+				(c) => c.trim(),
+				fallbackContent,
+			);
+			content = result;
+		}
+
+		await input.writeFile("llms.txt", content);
 		return { success: true, files_modified: ["llms.txt"] };
 	} catch (err) {
 		return { success: false, files_modified: [], error: (err as Error).message };
@@ -150,6 +273,7 @@ async function optimizeLlmsTxt(
 async function optimizeSemanticStructure(
 	task: OptimizationTask,
 	input: OptimizationInput,
+	deps?: { chatLLM?: (req: LLMRequest) => Promise<LLMResponse> },
 ): Promise<{ success: boolean; files_modified: string[]; error?: string }> {
 	const htmlFiles = await getHtmlFiles(input);
 	const modified: string[] = [];
@@ -163,7 +287,31 @@ async function optimizeSemanticStructure(
 			if (task.title.includes("헤딩") && !/<h1[\s>]/i.test(html)) {
 				const title =
 					(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1]?.trim() || "Page Title";
-				html = html.replace(/<body[^>]*>/i, (match) => `${match}\n<h1>${title}</h1>`);
+
+				let heading = title;
+
+				if (deps?.chatLLM) {
+					const pageText = extractVisibleText(html).slice(0, 1000);
+					const { result } = await safeLLMCall(
+						deps.chatLLM,
+						{
+							prompt: `Suggest a clear, descriptive H1 heading for this web page.\n\nCurrent title tag: ${title}\n\nContent excerpt:\n${pageText}`,
+							system_instruction:
+								"You are a web content expert. Write a single H1 heading that is clear, descriptive, and optimized for both users and LLM engines. It should accurately represent the page content. Output ONLY the heading text — no HTML tags, no quotes, no explanation. Keep it under 80 characters.",
+							json_mode: false,
+							temperature: 0.3,
+							max_tokens: 100,
+						},
+						(content) => {
+							const trimmed = content.trim().replace(/^["'#]+|["']+$/g, "");
+							return trimmed || title;
+						},
+						title,
+					);
+					heading = result;
+				}
+
+				html = html.replace(/<body[^>]*>/i, (match) => `${match}\n<h1>${escapeHtml(heading)}</h1>`);
 				fileModified = true;
 			}
 

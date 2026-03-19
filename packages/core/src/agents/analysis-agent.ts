@@ -10,6 +10,12 @@
 import { v4 as uuidv4 } from "uuid";
 import type { AnalysisReport } from "../models/analysis-report.js";
 import type { GeoScore } from "../models/geo-score.js";
+import type { LLMRequest, LLMResponse } from "../llm/geo-llm-client.js";
+import { buildPageContext, safeLLMCall, parseJsonResponse } from "./llm-helpers.js";
+import {
+	ContentQualityAssessmentSchema,
+	type ContentQualityAssessment,
+} from "./llm-response-schemas.js";
 import { type GeoEvaluationData, extractGeoEvaluationData } from "./geo-eval-extractor.js";
 import type {
 	CrawlData,
@@ -52,6 +58,8 @@ export interface AnalysisOutput {
 	all_pages: Array<{ filename: string; crawl_data: CrawlData }> | null;
 	/** 상세 GEO 평가 데이터 (봇 정책, 스키마 커버리지, 클레임, JS 의존성, 제품 정보) */
 	eval_data: GeoEvaluationData;
+	/** LLM 콘텐츠 품질 평가 (chatLLM 없으면 null) */
+	llm_assessment: ContentQualityAssessment | null;
 }
 
 // ── Helper: CrawlData → AnalysisReport 변환 ─────────────────
@@ -180,6 +188,7 @@ export interface AnalysisDeps {
 		maxPages?: number,
 		timeoutMs?: number,
 	) => Promise<MultiPageCrawlResult>;
+	chatLLM?: (req: LLMRequest) => Promise<LLMResponse>;
 }
 
 /**
@@ -200,7 +209,11 @@ function buildPageScore(
 function computeAggregateScores(
 	homepage: PageScoreResult,
 	pages: PageScoreResult[],
-): { aggregate_score: number; aggregate_grade: string; per_dimension_averages: MultiPageAnalysisResult["per_dimension_averages"] } {
+): {
+	aggregate_score: number;
+	aggregate_grade: string;
+	per_dimension_averages: MultiPageAnalysisResult["per_dimension_averages"];
+} {
 	const allPages = [homepage, ...pages];
 	const weights = [2, ...pages.map(() => 1)];
 	const totalWeight = weights.reduce((a, b) => a + b, 0);
@@ -209,10 +222,14 @@ function computeAggregateScores(
 	const aggregate_score = Math.round((weightedSum / totalWeight) * 10) / 10;
 
 	const aggregate_grade =
-		aggregate_score >= 90 ? "Excellent"
-			: aggregate_score >= 75 ? "Good"
-				: aggregate_score >= 55 ? "Needs Improvement"
-					: aggregate_score >= 35 ? "Poor"
+		aggregate_score >= 90
+			? "Excellent"
+			: aggregate_score >= 75
+				? "Good"
+				: aggregate_score >= 55
+					? "Needs Improvement"
+					: aggregate_score >= 35
+						? "Poor"
 						: "Critical";
 
 	// Per-dimension averages (weighted)
@@ -247,7 +264,11 @@ export async function runAnalysis(
 	let allPages: Array<{ filename: string; crawl_data: CrawlData }> | null = null;
 
 	if (classification.site_type === "manufacturer" && deps.crawlMultiplePages) {
-		const mpResult = await deps.crawlMultiplePages(input.target_url, 20, input.crawl_timeout ?? 15000);
+		const mpResult = await deps.crawlMultiplePages(
+			input.target_url,
+			20,
+			input.crawl_timeout ?? 15000,
+		);
 
 		const homepageScore = buildPageScore(mpResult.homepage, "index.html", deps.scoreTarget);
 		const pageScores: PageScoreResult[] = mpResult.pages.map((p) =>
@@ -283,10 +304,7 @@ export async function runAnalysis(
 
 		machine_readability: {
 			grade:
-				effectiveScore >= 75 ? "A"
-					: effectiveScore >= 55 ? "B"
-						: effectiveScore >= 35 ? "C"
-							: "F",
+				effectiveScore >= 75 ? "A" : effectiveScore >= 55 ? "B" : effectiveScore >= 35 ? "C" : "F",
 			js_dependency_ratio: 0,
 			structure_quality: structureQuality,
 			crawler_access: [
@@ -312,7 +330,10 @@ export async function runAnalysis(
 		},
 
 		extracted_info_items: [],
-		current_geo_score: buildGeoScore({ overall_score: effectiveScore, dimensions: geoScores.dimensions }),
+		current_geo_score: buildGeoScore({
+			overall_score: effectiveScore,
+			dimensions: geoScores.dimensions,
+		}),
 		competitor_gaps: [],
 		llm_status: [],
 	};
@@ -327,12 +348,45 @@ export async function runAnalysis(
 		: geoScores;
 
 	// 6. Extract detailed GEO evaluation data
-	const subPages = allPages?.map((p) => ({
-		url: p.crawl_data.url,
-		filename: p.filename,
-		crawl_data: p.crawl_data,
-	})) ?? [];
+	const subPages =
+		allPages?.map((p) => ({
+			url: p.crawl_data.url,
+			filename: p.filename,
+			crawl_data: p.crawl_data,
+		})) ?? [];
 	const evalData = extractGeoEvaluationData(crawlData, subPages, geoScores.dimensions);
+
+	// 7. LLM content quality assessment (optional)
+	let llmAssessment: ContentQualityAssessment | null = null;
+	if (deps.chatLLM) {
+		try {
+			const pageContext = buildPageContext(crawlData.html, crawlData.url, {
+				robots_txt: crawlData.robots_txt,
+				llms_txt: crawlData.llms_txt,
+				json_ld: crawlData.json_ld,
+				meta_tags: crawlData.meta_tags,
+				title: crawlData.title,
+				site_type: classification.site_type,
+				scores: Object.fromEntries(geoScores.dimensions.map((d) => [d.id, d.score])),
+			});
+
+			const { result } = await safeLLMCall(
+				deps.chatLLM,
+				{
+					prompt: `Evaluate this web page for LLM consumption quality. Analyze brand recognition, content quality, information gaps, and issues that affect how well LLMs can understand and cite this page.\n\nPage context:\n${JSON.stringify(pageContext, null, 2)}`,
+					system_instruction: `You are a GEO (Generative Engine Optimization) expert. Evaluate web pages for LLM consumption quality. Respond with JSON only:\n{\n  "brand_recognition": { "score": 0-100, "identified_brand": "string", "identified_products": ["string"], "reasoning": "string" },\n  "content_quality": { "score": 0-100, "clarity": 0-100, "completeness": 0-100, "factual_density": 0-100, "reasoning": "string" },\n  "information_gaps": [{ "category": "string", "description": "string", "importance": "critical|high|medium|low" }],\n  "llm_consumption_issues": [{ "issue": "string", "recommendation": "string" }],\n  "overall_assessment": "string"\n}`,
+					json_mode: true,
+					temperature: 0.3,
+					max_tokens: 2000,
+				},
+				(content) => parseJsonResponse(content, ContentQualityAssessmentSchema),
+				null,
+			);
+			llmAssessment = result;
+		} catch {
+			// LLM assessment failure is non-fatal
+		}
+	}
 
 	return {
 		report,
@@ -342,5 +396,6 @@ export async function runAnalysis(
 		multi_page: multiPage,
 		all_pages: allPages,
 		eval_data: evalData,
+		llm_assessment: llmAssessment,
 	};
 }

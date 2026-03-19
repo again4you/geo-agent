@@ -177,6 +177,7 @@ export async function runPipeline(
 						scoreTarget: deps.scoreTarget,
 						classifySite: deps.classifySite,
 						crawlMultiplePages: deps.crawlMultiplePages,
+						chatLLM: deps.chatLLM,
 					},
 				);
 				ctx.setRef("analysis", analysisOutput.report.report_id);
@@ -251,6 +252,7 @@ export async function runPipeline(
 						}
 					: null,
 				eval_data: out.eval_data,
+				llm_assessment: out.llm_assessment,
 				synthetic_probes: probeResults,
 			}),
 		);
@@ -414,6 +416,7 @@ export async function runPipeline(
 									return pages;
 								}
 							: undefined,
+						chatLLM: deps.chatLLM,
 					},
 				);
 

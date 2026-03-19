@@ -154,9 +154,7 @@ export function extractSchemaCoverage(
 			present,
 			pages: foundOn,
 			quality,
-			details: present
-				? `Found on ${foundOn.length}/${pages.length} pages`
-				: "Not implemented",
+			details: present ? `Found on ${foundOn.length}/${pages.length} pages` : "Not implemented",
 		};
 	});
 }
@@ -180,10 +178,7 @@ const CLAIM_PATTERNS = [
 	/(?:revolutionary|breakthrough|game[\s-]changing)/gi,
 ];
 
-export function extractMarketingClaims(
-	html: string,
-	pageUrl: string,
-): MarketingClaim[] {
+export function extractMarketingClaims(html: string, pageUrl: string): MarketingClaim[] {
 	const textContent = html
 		.replace(/<script[\s\S]*?<\/script>/gi, "")
 		.replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -443,7 +438,10 @@ export function generateFindings(
 		(p) => p.info.product_name || p.info.specs_in_schema.length > 0 || p.info.has_aggregate_rating,
 	);
 	if (pagesWithProduct.length > 0) {
-		const names = pagesWithProduct.slice(0, 3).map((p) => p.info.product_name ?? p.filename).join(", ");
+		const names = pagesWithProduct
+			.slice(0, 3)
+			.map((p) => p.info.product_name ?? p.filename)
+			.join(", ");
 		strengths.push({
 			title: "제품 구조화 데이터 존재",
 			description: `${pagesWithProduct.length}개 페이지에서 제품 정보 구조화 (${names}). LLM이 제품명/가격/평점 파악 가능.`,
@@ -457,7 +455,8 @@ export function generateFindings(
 	if (orgSchema) {
 		strengths.push({
 			title: `${orgSchema.schema_type} 스키마 구현`,
-			description: "홈페이지에 기업 스키마 구현으로 LLM이 회사 정보(설립 연도, 사업 분야)를 인식 가능.",
+			description:
+				"홈페이지에 기업 스키마 구현으로 LLM이 회사 정보(설립 연도, 사업 분야)를 인식 가능.",
 			icon: "✅",
 		});
 	}
@@ -477,7 +476,8 @@ export function generateFindings(
 	if (!llmsTxt.exists) {
 		weaknesses.push({
 			title: "llms.txt 미존재",
-			description: "GEO 필수 요소인 llms.txt 파일이 없음. LLM에게 사이트 구조, 인용 허용 범위, 제품 정보 소스를 안내하지 못함.",
+			description:
+				"GEO 필수 요소인 llms.txt 파일이 없음. LLM에게 사이트 구조, 인용 허용 범위, 제품 정보 소스를 안내하지 못함.",
 			icon: "❌",
 		});
 	}
@@ -488,7 +488,8 @@ export function generateFindings(
 	if (missingCritical.length > 0) {
 		weaknesses.push({
 			title: `핵심 스키마 미구현: ${missingCritical.map((s) => s.schema_type).join(", ")}`,
-			description: "주력 제품 페이지에 표준 Product/Offer/AggregateRating 스키마 없음. LLM이 제품 정보를 구조적으로 파싱 불가.",
+			description:
+				"주력 제품 페이지에 표준 Product/Offer/AggregateRating 스키마 없음. LLM이 제품 정보를 구조적으로 파싱 불가.",
 			icon: "❌",
 		});
 	}
@@ -534,7 +535,8 @@ export function generateFindings(
 	if (missingCritical.length > 0) {
 		opportunities.push({
 			title: "Product Schema + 스펙 additionalProperty 추가",
-			description: "주력 제품에 Product + Offer + AggregateRating 스키마 적용 시 LLM 인용률 대폭 향상 기대. 업계 데이터: 스키마 적용 시 AI 정답률 16%→54%.",
+			description:
+				"주력 제품에 Product + Offer + AggregateRating 스키마 적용 시 LLM 인용률 대폭 향상 기대. 업계 데이터: 스키마 적용 시 AI 정답률 16%→54%.",
 			icon: "🚀",
 		});
 	}
@@ -542,7 +544,8 @@ export function generateFindings(
 	if (!llmsTxt.exists) {
 		opportunities.push({
 			title: "llms.txt 도입",
-			description: "llms.txt 생성으로 LLM에게 제품 데이터 소스, 인용 가이드라인, API 엔드포인트를 명시적으로 제공 가능.",
+			description:
+				"llms.txt 생성으로 LLM에게 제품 데이터 소스, 인용 가이드라인, API 엔드포인트를 명시적으로 제공 가능.",
 			icon: "🚀",
 		});
 	}
@@ -559,12 +562,17 @@ export function generateFindings(
 	if (jsDependency.estimated_js_dependency > 0.3) {
 		opportunities.push({
 			title: "SSR/SSG로 정적 HTML 콘텐츠 강화",
-			description: "핵심 스펙/가격 데이터를 정적 HTML에 포함 시 LLM 크롤러가 JS 없이도 정보 수집 가능.",
+			description:
+				"핵심 스펙/가격 데이터를 정적 HTML에 포함 시 LLM 크롤러가 JS 없이도 정보 수집 가능.",
 			icon: "🚀",
 		});
 	}
 
-	return { strengths: strengths.slice(0, 5), weaknesses: weaknesses.slice(0, 5), opportunities: opportunities.slice(0, 5) };
+	return {
+		strengths: strengths.slice(0, 5),
+		weaknesses: weaknesses.slice(0, 5),
+		opportunities: opportunities.slice(0, 5),
+	};
 }
 
 // ── Allowed Paths Analysis ──────────────────────────────────
@@ -712,7 +720,9 @@ export function generateImprovements(
 	}
 
 	// Unverifiable marketing claims
-	const unverifiedClaims = evalData.marketing_claims.filter((c) => c.verifiability === "unverifiable");
+	const unverifiedClaims = evalData.marketing_claims.filter(
+		(c) => c.verifiability === "unverifiable",
+	);
 	if (unverifiedClaims.length >= 2) {
 		recs.push({
 			id: `R-${counter++}`,
@@ -857,16 +867,22 @@ export function extractGeoEvaluationData(
 	}));
 
 	// 7. Blocked paths (unique from all bots)
-	const blockedPaths = [
-		...new Set(botPolicies.flatMap((b) => b.disallowed_paths)),
-	].filter((p) => p !== "/");
+	const blockedPaths = [...new Set(botPolicies.flatMap((b) => b.disallowed_paths))].filter(
+		(p) => p !== "/",
+	);
 
 	// 8. Path access analysis
 	const pathAccess = analyzePathAccess(homepage.robots_txt);
 
 	// 9. Strengths / Weaknesses / Opportunities
 	const findings = generateFindings(
-		botPolicies, llmsTxt, schemaCoverage, productInfo, jsDependency, allClaims, dimensions,
+		botPolicies,
+		llmsTxt,
+		schemaCoverage,
+		productInfo,
+		jsDependency,
+		allClaims,
+		dimensions,
 	);
 
 	const baseData = {

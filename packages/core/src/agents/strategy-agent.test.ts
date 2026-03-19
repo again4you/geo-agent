@@ -241,8 +241,23 @@ describe("Strategy Agent", () => {
 
 	describe("runStrategy — LLM enhancement", () => {
 		it("uses LLM when use_llm=true and chatLLM provided", async () => {
+			const llmResponse = {
+				strategy_rationale: "LLM-generated strategy rationale",
+				tasks: [
+					{
+						change_type: "SCHEMA_MARKUP",
+						title: "LLM: Add JSON-LD",
+						description: "Add comprehensive JSON-LD markup",
+						target_element: null,
+						priority: "critical",
+						expected_impact: "Significant improvement in structured data",
+					},
+				],
+				estimated_delta: 20,
+				confidence: 0.8,
+			};
 			const mockChat = vi.fn().mockResolvedValue({
-				content: "LLM-generated strategy rationale",
+				content: JSON.stringify(llmResponse),
 				model: "gpt-4o",
 				provider: "openai",
 				usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
@@ -257,6 +272,10 @@ describe("Strategy Agent", () => {
 
 			expect(mockChat).toHaveBeenCalled();
 			expect(result.plan.strategy_rationale).toBe("LLM-generated strategy rationale");
+			// LLM tasks should be included
+			expect(result.plan.tasks.some((t) => t.title === "LLM: Add JSON-LD")).toBe(true);
+			// LLM estimated delta should be used
+			expect(result.estimated_delta).toBe(20);
 		});
 
 		it("falls back to rule-based when LLM fails", async () => {

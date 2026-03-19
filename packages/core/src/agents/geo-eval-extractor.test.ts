@@ -121,7 +121,7 @@ describe("extractProductInfo", () => {
 
 	it("extracts HTML spec patterns", () => {
 		const data = makeCrawlData({
-			html: "<html><body>Camera: 200 MP, Battery: 5000 mAh, Display: 6.8\" display</body></html>",
+			html: '<html><body>Camera: 200 MP, Battery: 5000 mAh, Display: 6.8" display</body></html>',
 		});
 		const result = extractProductInfo(data);
 		expect(result.specs_in_html.length).toBeGreaterThan(0);
@@ -132,7 +132,8 @@ describe("extractProductInfo", () => {
 
 describe("extractMarketingClaims", () => {
 	it("detects superlative claims", () => {
-		const html = "<html><body>We are the world's first to bring AI to every device. Award-winning design.</body></html>";
+		const html =
+			"<html><body>We are the world's first to bring AI to every device. Award-winning design.</body></html>";
 		const result = extractMarketingClaims(html, "https://example.com");
 		expect(result.length).toBeGreaterThanOrEqual(1);
 	});
@@ -150,7 +151,12 @@ describe("generateFindings", () => {
 	const botPolicies: BotPolicyEntry[] = [
 		{ bot_name: "GPTBot", service: "ChatGPT", status: "allowed", disallowed_paths: [] },
 		{ bot_name: "ClaudeBot", service: "Claude", status: "not_specified", disallowed_paths: [] },
-		{ bot_name: "PerplexityBot", service: "Perplexity", status: "partial", disallowed_paths: ["/search/"] },
+		{
+			bot_name: "PerplexityBot",
+			service: "Perplexity",
+			status: "partial",
+			disallowed_paths: ["/search/"],
+		},
 		{ bot_name: "Google-Extended", service: "Gemini", status: "allowed", disallowed_paths: [] },
 	];
 
@@ -158,9 +164,23 @@ describe("generateFindings", () => {
 		const result = generateFindings(
 			botPolicies,
 			{ exists: false, content_preview: null },
-			[{ schema_type: "Organization", present: true, pages: ["index.html"], quality: "good", details: "Found" }],
+			[
+				{
+					schema_type: "Organization",
+					present: true,
+					pages: ["index.html"],
+					quality: "good",
+					details: "Found",
+				},
+			],
 			[],
-			{ script_count: 5, external_scripts: 3, inline_scripts: 2, frameworks_detected: [], estimated_js_dependency: 0.2 },
+			{
+				script_count: 5,
+				external_scripts: 3,
+				inline_scripts: 2,
+				frameworks_detected: [],
+				estimated_js_dependency: 0.2,
+			},
 			[],
 		);
 		expect(result.strengths.length).toBeGreaterThan(0);
@@ -173,7 +193,13 @@ describe("generateFindings", () => {
 			{ exists: false, content_preview: null },
 			[],
 			[],
-			{ script_count: 50, external_scripts: 30, inline_scripts: 20, frameworks_detected: ["React/Next.js"], estimated_js_dependency: 0.8 },
+			{
+				script_count: 50,
+				external_scripts: 30,
+				inline_scripts: 20,
+				frameworks_detected: ["React/Next.js"],
+				estimated_js_dependency: 0.8,
+			},
 			[],
 		);
 		expect(result.weaknesses.some((w) => w.title.includes("llms.txt"))).toBe(true);
@@ -182,10 +208,35 @@ describe("generateFindings", () => {
 
 	it("generates opportunities for missing schemas", () => {
 		const schemas = [
-			{ schema_type: "Product", present: false, pages: [], quality: "none" as const, details: "Not implemented" },
-			{ schema_type: "Offer", present: false, pages: [], quality: "none" as const, details: "Not implemented" },
+			{
+				schema_type: "Product",
+				present: false,
+				pages: [],
+				quality: "none" as const,
+				details: "Not implemented",
+			},
+			{
+				schema_type: "Offer",
+				present: false,
+				pages: [],
+				quality: "none" as const,
+				details: "Not implemented",
+			},
 		];
-		const result = generateFindings(botPolicies, { exists: false, content_preview: null }, schemas, [], { script_count: 5, external_scripts: 3, inline_scripts: 2, frameworks_detected: [], estimated_js_dependency: 0.2 }, []);
+		const result = generateFindings(
+			botPolicies,
+			{ exists: false, content_preview: null },
+			schemas,
+			[],
+			{
+				script_count: 5,
+				external_scripts: 3,
+				inline_scripts: 2,
+				frameworks_detected: [],
+				estimated_js_dependency: 0.2,
+			},
+			[],
+		);
 		expect(result.opportunities.some((o) => o.title.includes("Product Schema"))).toBe(true);
 		expect(result.opportunities.some((o) => o.title.includes("llms.txt"))).toBe(true);
 	});
@@ -220,7 +271,9 @@ describe("extractGeoEvaluationData", () => {
 				url: "https://example.com/product",
 				filename: "product.html",
 				crawl_data: makeCrawlData({
-					json_ld: [{ "@type": "Product", name: "Widget", offers: { price: "99", priceCurrency: "USD" } }],
+					json_ld: [
+						{ "@type": "Product", name: "Widget", offers: { price: "99", priceCurrency: "USD" } },
+					],
 				}),
 			},
 		];
@@ -259,7 +312,13 @@ describe("generateImprovements", () => {
 			llms_txt: { exists: false, content_preview: null },
 			schema_coverage: extractSchemaCoverage([]),
 			marketing_claims: [],
-			js_dependency: { script_count: 2, external_scripts: 1, inline_scripts: 1, frameworks_detected: [], estimated_js_dependency: 0.1 },
+			js_dependency: {
+				script_count: 2,
+				external_scripts: 1,
+				inline_scripts: 1,
+				frameworks_detected: [],
+				estimated_js_dependency: 0.1,
+			},
 			product_info: [],
 			blocked_paths: [],
 			path_access: [],
@@ -276,11 +335,29 @@ describe("generateImprovements", () => {
 			bot_policies: parseRobotsTxt(null),
 			llms_txt: { exists: false, content_preview: null },
 			schema_coverage: [
-				{ schema_type: "Product", present: false, pages: [], quality: "none" as const, details: "" },
-				{ schema_type: "FAQPage", present: false, pages: [], quality: "none" as const, details: "" },
+				{
+					schema_type: "Product",
+					present: false,
+					pages: [],
+					quality: "none" as const,
+					details: "",
+				},
+				{
+					schema_type: "FAQPage",
+					present: false,
+					pages: [],
+					quality: "none" as const,
+					details: "",
+				},
 			],
 			marketing_claims: [],
-			js_dependency: { script_count: 50, external_scripts: 30, inline_scripts: 20, frameworks_detected: [], estimated_js_dependency: 0.8 },
+			js_dependency: {
+				script_count: 50,
+				external_scripts: 30,
+				inline_scripts: 20,
+				frameworks_detected: [],
+				estimated_js_dependency: 0.8,
+			},
 			product_info: [],
 			blocked_paths: [],
 			path_access: [],
