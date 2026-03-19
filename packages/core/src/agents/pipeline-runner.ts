@@ -485,6 +485,19 @@ export async function runPipeline(
 				}
 
 				if (optimizationResult) {
+					// Calculate per-task impact based on overall score delta
+					const totalDelta = currentScore - initialScore;
+					const taskCount = Math.max(optimizationResult.applied_tasks.length, 1);
+					const perTaskImpact = Math.round((totalDelta / taskCount) * 10) / 10;
+
+					// Find changed dimensions
+					const changedDims = currentDimensions
+						.filter((d) => {
+							const before = analysisOutput?.geo_scores.dimensions.find((b) => b.id === d.id);
+							return before && Math.abs(d.score - before.score) > 0;
+						})
+						.map((d) => d.id);
+
 					for (const taskId of optimizationResult.applied_tasks) {
 						const task = strategyOutput?.plan.tasks.find((t) => t.task_id === taskId);
 						if (task) {
@@ -492,8 +505,8 @@ export async function runPipeline(
 								file_path: task.target_element ?? "unknown",
 								change_type: "modified",
 								summary: task.title,
-								impact_score: 0,
-								affected_dimensions: [],
+								impact_score: perTaskImpact,
+								affected_dimensions: changedDims,
 								diff_preview: "",
 							});
 						}

@@ -115,14 +115,22 @@ const BUNDLED_SKILLS: SkillMetadata[] = [
 export function createSkillRegistry(): SkillRegistry {
 	const skills = new Map<string, Skill>();
 
-	// Bundled 스킬은 메타데이터만 등록 (실행 로직은 각 에이전트가 담당)
+	// Bundled 스킬: 메타데이터 레지스트리 전용.
+	// 실제 실행 로직은 각 에이전트가 해당 모듈을 직접 import하여 호출:
+	//   - dual-crawl → crawlTarget(), crawlMultiplePages() (skills/dual-crawl.ts)
+	//   - geo-scorer → scoreTarget() (skills/geo-scorer.ts)
+	//   - site-classifier → classifySite() (core/prompts/template-engine.ts)
+	//   - schema-builder → optimizeSchemaMarkup() (core/agents/optimization-agent.ts)
+	//   - content-optimizer → optimizeContentDensity() 등 (core/agents/optimization-agent.ts)
+	//   - diff-generator → renderSimpleDiff() (core/report/report-generator.ts)
+	// registerSkill()로 Managed/Workspace 스킬을 추가 등록하여 확장 가능.
 	for (const meta of BUNDLED_SKILLS) {
 		skills.set(meta.name, {
 			metadata: meta,
 			execute: async (_ctx, _params) => {
 				return {
 					success: false,
-					error: `Skill '${meta.name}' execution requires agent integration (not standalone)`,
+					error: `Bundled skill '${meta.name}' is metadata-only. Use the corresponding agent module for execution.`,
 					duration_ms: 0,
 				};
 			},

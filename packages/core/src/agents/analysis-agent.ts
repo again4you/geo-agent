@@ -64,6 +64,18 @@ export interface AnalysisOutput {
 
 // ── Helper: CrawlData → AnalysisReport 변환 ─────────────────
 
+function computeJsDependencyRatio(html: string): number {
+	const totalSize = html.length || 1;
+	// Count bytes inside <script> tags (inline + references)
+	const scriptBlocks = html.match(/<script[\s\S]*?<\/script>/gi) || [];
+	const scriptSize = scriptBlocks.reduce((sum, block) => sum + block.length, 0);
+	// Count external script references
+	const externalScripts = (html.match(/<script[^>]+src=/gi) || []).length;
+	// Ratio: script bytes / total bytes + penalty for many external scripts
+	const ratio = scriptSize / totalSize + Math.min(externalScripts * 0.02, 0.2);
+	return Math.min(Math.round(ratio * 1000) / 1000, 1);
+}
+
 function computeStructureQuality(html: string) {
 	const semanticTags = ["article", "section", "main", "nav", "aside", "header", "footer"];
 	const semanticCount = semanticTags.filter((tag) =>
@@ -144,9 +156,9 @@ function buildGeoScore(scoreData: {
 
 	return {
 		total: scoreData.overall_score,
-		citation_rate: 0, // LLM 종속 — 초기 분석에서는 0
-		citation_accuracy: 0,
-		info_recognition_score: 0,
+		citation_rate: 0, // Probe 실행 후 pipeline-runner에서 반영 (probeResults → current_geo_score)
+		citation_accuracy: 0, // Probe 실행 후 pipeline-runner에서 반영
+		info_recognition_score: 0, // Probe 실행 후 pipeline-runner에서 반영
 		coverage: dimMap.S3 ?? 0, // 콘텐츠 기계가독성 → coverage 근사
 		rank_position: 0,
 		structured_score: dimMap.S2 ?? 0, // 구조화 데이터 → structured_score
@@ -305,7 +317,7 @@ export async function runAnalysis(
 		machine_readability: {
 			grade:
 				effectiveScore >= 75 ? "A" : effectiveScore >= 55 ? "B" : effectiveScore >= 35 ? "C" : "F",
-			js_dependency_ratio: 0,
+			js_dependency_ratio: computeJsDependencyRatio(crawlData.html),
 			structure_quality: structureQuality,
 			crawler_access: [
 				{
