@@ -297,20 +297,24 @@ export class GeoLLMClient {
 		this.costTracker = new CostTracker();
 	}
 
-	/** 활성화된 프로바이더 기반 최적 라우팅 */
+	/** 활성화된 프로바이더 기반 최적 라우팅 (API key가 있는 프로바이더 우선) */
 	selectProvider(preferredProvider?: string): LLMProviderSettings {
 		const enabled = this.configManager.getEnabled();
 		if (enabled.length === 0) {
 			throw new Error("No LLM providers enabled. Configure at least one provider.");
 		}
 
+		// Prefer providers with API keys
+		const withKeys = enabled.filter((p) => p.api_key);
+
 		if (preferredProvider) {
-			const preferred = enabled.find((p) => p.provider_id === preferredProvider);
+			const preferred = withKeys.find((p) => p.provider_id === preferredProvider)
+				?? enabled.find((p) => p.provider_id === preferredProvider);
 			if (preferred) return preferred;
 		}
 
-		// 기본: 첫 번째 활성 프로바이더
-		return enabled[0];
+		// 기본: API key가 있는 첫 번째 프로바이더, 없으면 첫 번째 활성
+		return withKeys[0] ?? enabled[0];
 	}
 
 	/** LLM 호출 — 프로바이더별 SDK 자동 라우팅 */
