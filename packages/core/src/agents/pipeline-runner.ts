@@ -65,6 +65,7 @@ export interface PipelineResult {
 	cycles_completed: number;
 	report_path: string | null;
 	dashboard_html: string | null;
+	llm_models_used: string[];
 	error?: string;
 }
 
@@ -125,6 +126,16 @@ export async function runPipeline(
 	let initialScore = 0;
 	let cycleCount = 0;
 	let probeResults: SyntheticProbeRunResult | null = null;
+	const llmModelsUsed = new Set<string>();
+
+	// Wrap chatLLM to track which models are actually used
+	const trackedChatLLM = deps.chatLLM
+		? async (req: LLMRequest): Promise<LLMResponse> => {
+				const response = await deps.chatLLM!(req);
+				llmModelsUsed.add(`${response.provider}/${response.model}`);
+				return response;
+			}
+		: undefined;
 
 	const orchestrator = new Orchestrator({
 		maxRetries: config.max_retries ?? 3,
@@ -177,7 +188,7 @@ export async function runPipeline(
 						scoreTarget: deps.scoreTarget,
 						classifySite: deps.classifySite,
 						crawlMultiplePages: deps.crawlMultiplePages,
-						chatLLM: deps.chatLLM,
+						chatLLM: trackedChatLLM,
 					},
 				);
 				ctx.setRef("analysis", analysisOutput.report.report_id);
@@ -187,7 +198,7 @@ export async function runPipeline(
 				initialScore = currentScore;
 
 				// Run Synthetic Probes if LLM is available
-				if (deps.chatLLM) {
+				if (trackedChatLLM) {
 					try {
 						const productInfos = analysisOutput.eval_data?.product_info ?? [];
 						const productNames = productInfos
@@ -206,7 +217,7 @@ export async function runPipeline(
 						};
 						probeResults = await runProbes(
 							probeContext,
-							{ chatLLM: deps.chatLLM },
+							{ chatLLM: trackedChatLLM },
 							{ delayMs: 500 },
 						);
 
@@ -307,16 +318,16 @@ export async function runPipeline(
 	orchestrator.registerHandler("STRATEGIZING", async (ctx: StageContext) => {
 		await trackStage(
 			"STRATEGIZING",
-			`Generating optimization plan (cycle ${cycleCount}), use_llm: ${!!deps.chatLLM}`,
+			`Generating optimization plan (cycle ${cycleCount}), use_llm: ${!!trackedChatLLM}`,
 			async () => {
 				if (!analysisOutput) throw new Error("Analysis output missing");
 				strategyOutput = await runStrategy(
 					{
 						target_id: config.target_id,
 						analysis_report: analysisOutput.report,
-						use_llm: !!deps.chatLLM,
+						use_llm: !!trackedChatLLM,
 					},
-					deps.chatLLM ? { chatLLM: deps.chatLLM } : undefined,
+					trackedChatLLM ? { chatLLM: trackedChatLLM } : undefined,
 				);
 				ctx.setRef("optimization", strategyOutput.plan.plan_id);
 				return strategyOutput;
@@ -348,7 +359,7 @@ export async function runPipeline(
 						writeFile: async (p, c) => cloneManager!.writeWorkingFile(tid, p, c),
 						listFiles: async () => cloneManager!.listWorkingFiles(tid),
 					},
-					deps.chatLLM ? { chatLLM: deps.chatLLM } : undefined,
+					trackedChatLLM ? { chatLLM: trackedChatLLM } : undefined,
 				);
 				return optimizationResult;
 			},
@@ -431,7 +442,7 @@ export async function runPipeline(
 									return pages;
 								}
 							: undefined,
-						chatLLM: deps.chatLLM,
+						chatLLM: trackedChatLLM,
 					},
 				);
 
@@ -541,9 +552,14 @@ export async function runPipeline(
 					// Archive generation failure is non-fatal
 				}
 
-				return { initial: initialScore, final: currentScore };
+				return {
+					initial: initialScore,
+					final: currentScore,
+					llm_models_used: Array.from(llmModelsUsed),
+				};
 			},
-			(out) => `Report: ${out.initial}→${out.final} (+${out.final - out.initial})`,
+			(out) =>
+				`Report: ${out.initial}→${out.final} (+${out.final - out.initial}), LLM: ${out.llm_models_used.join(", ") || "none"}`,
 		);
 	});
 
@@ -559,6 +575,7 @@ export async function runPipeline(
 			cycles_completed: cycleCount,
 			report_path: reportPath,
 			dashboard_html: dashboardHtml,
+			llm_models_used: Array.from(llmModelsUsed),
 			error: result.finalState.error_message ?? undefined,
 		};
 	} catch (err) {
@@ -570,6 +587,7 @@ export async function runPipeline(
 			cycles_completed: cycleCount,
 			report_path: null,
 			dashboard_html: null,
+			llm_models_used: Array.from(llmModelsUsed),
 			error: err instanceof Error ? err.message : String(err),
 		};
 	}

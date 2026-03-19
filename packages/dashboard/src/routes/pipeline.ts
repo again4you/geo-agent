@@ -228,8 +228,12 @@ async function executePipelineAsync(
 				delta: result.delta,
 				cycles: result.cycles_completed,
 			});
+			const modelsStr =
+				result.llm_models_used.length > 0
+					? ` LLM: ${result.llm_models_used.join(", ")}`
+					: " (no LLM)";
 			console.log(
-				`✅ Pipeline completed for ${targetId}: ${result.initial_score} → ${result.final_score} (+${result.delta}) [${result.cycles_completed} cycles]`,
+				`✅ Pipeline completed for ${targetId}: ${result.initial_score} → ${result.final_score} (+${result.delta}) [${result.cycles_completed} cycles]${modelsStr}`,
 			);
 		} else {
 			await repo.setError(pipelineId, result.error ?? "Unknown error");
@@ -358,6 +362,18 @@ pipelineRouter.get("/:id/pipeline/:pipelineId/evaluation", async (c) => {
 		? ((final_data.after as number) ?? ((final_data.delta as number) ?? 0) + initialScore)
 		: initialScore;
 
+	// Extract LLM models from REPORTING stage result_full
+	const reportingStage = stages.find((s) => s.stage === "REPORTING" && s.result_full);
+	let llmModelsUsed: string[] = [];
+	if (reportingStage?.result_full) {
+		try {
+			const reportData = JSON.parse(reportingStage.result_full);
+			llmModelsUsed = reportData.llm_models_used ?? [];
+		} catch {
+			/* ignore */
+		}
+	}
+
 	return c.json({
 		initial_score: initialScore,
 		initial_grade: initial.grade ?? "Unknown",
@@ -370,6 +386,7 @@ pipelineRouter.get("/:id/pipeline/:pipelineId/evaluation", async (c) => {
 		eval_data: initial.eval_data ?? null,
 		synthetic_probes: initial.synthetic_probes ?? null,
 		validation: final_data,
+		llm_models_used: llmModelsUsed,
 		stages: stages.map((s) => ({
 			stage: s.stage,
 			status: s.status,

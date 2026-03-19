@@ -844,6 +844,10 @@ async function loadEvaluation() {
 			currentEvalData = evalData;
 			buildEvalSubTabs(evalData);
 			subTabsContainer.style.display = 'flex';
+			// Add LLM models info to status header
+			if (evalData.llm_models_used && evalData.llm_models_used.length > 0) {
+				statusHtml = statusHtml.replace('</div></div>', ' · LLM: <code>' + esc(evalData.llm_models_used.join(', ')) + '</code></div></div>');
+			}
 			container.innerHTML = statusHtml;
 			var evalDiv = document.createElement('div');
 			evalDiv.id = 'evalSubContent';
