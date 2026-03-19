@@ -201,13 +201,28 @@ pipelineRouter.post("/:id/pipeline", async (c) => {
 			stageCallbacks,
 		};
 
+		// Determine configured LLM mode for UI display
+		const configManager2 = new ProviderConfigManager(workspaceDir);
+		const enabledForDisplay = configManager2.getEnabled().filter((p) => p.api_key);
+		const llmMode = chatLLM ? "llm" : "rule-based";
+		const configuredProviders = enabledForDisplay.map((p) => {
+			return `${p.provider_id}/${p.default_model ?? "default"}`;
+		});
+
+		broadcastSSE("pipeline:started", {
+			target_id: targetId,
+			pipeline_id: pipeline.pipeline_id,
+			llm_mode: llmMode,
+			configured_providers: configuredProviders,
+		});
+
 		// Fire-and-forget: execute pipeline in background
 		runningPipelines.add(targetId);
 		executePipelineAsync(pipeline.pipeline_id, targetId, config, deps, repo).finally(() => {
 			runningPipelines.delete(targetId);
 		});
 
-		return c.json(pipeline, 201);
+		return c.json({ ...pipeline, llm_mode: llmMode, configured_providers: configuredProviders }, 201);
 	}
 
 	// Default: just create DB record (no execution)
@@ -489,7 +504,7 @@ pipelineRouter.get("/:id/cycle/status", async (c) => {
 	const stages = await stageRepo.findByPipelineId(pipeline.pipeline_id);
 	const latestStage = stages.length > 0 ? stages[stages.length - 1] : null;
 
-	// Extract LLM models from REPORTING stage
+	// Extract LLM models — try REPORTING stage first, then scan all stages
 	const reportingStage = stages.find((s) => s.stage === "REPORTING" && s.result_full);
 	let llmModels: string[] = [];
 	if (reportingStage?.result_full) {
@@ -499,6 +514,56 @@ pipelineRouter.get("/:id/cycle/status", async (c) => {
 		} catch {
 			/* ignore */
 		}
+	}
+
+	// During execution (no REPORTING yet), scan stage result_full for llm_call_log entries
+	if (llmModels.length === 0) {
+		const modelSet = new Set<string>();
+		for (const s of stages) {
+			if (!s.result_full) continue;
+			try {
+				const rf = JSON.parse(s.result_full);
+				// Check for llm_call_log array in result_full
+				if (Array.isArray(rf.llm_call_log)) {
+					for (const entry of rf.llm_call_log) {
+						if (entry.provider && entry.model) {
+							modelSet.add(`${entry.provider}/${entry.model}`);
+						}
+					}
+				}
+				// Check for llm_models_used array
+				if (Array.isArray(rf.llm_models_used)) {
+					for (const m of rf.llm_models_used) modelSet.add(m);
+				}
+			} catch {
+				/* ignore */
+			}
+		}
+		llmModels = Array.from(modelSet);
+	}
+
+	// Determine LLM mode: check configured providers
+	let llmMode = "unknown";
+	try {
+		const workspaceDir = sharedSettings?.workspace_dir ?? "./run";
+		const cfgMgr = new ProviderConfigManager(workspaceDir);
+		const enabled = cfgMgr.getEnabled().filter((p) => p.api_key);
+		llmMode = enabled.length > 0 ? "llm" : "rule-based";
+	} catch {
+		/* ignore */
+	}
+
+	// Configured providers (what will/was used)
+	let configuredProviders: string[] = [];
+	try {
+		const workspaceDir = sharedSettings?.workspace_dir ?? "./run";
+		const cfgMgr = new ProviderConfigManager(workspaceDir);
+		configuredProviders = cfgMgr
+			.getEnabled()
+			.filter((p) => p.api_key)
+			.map((p) => `${p.provider_id}/${p.default_model ?? "default"}`);
+	} catch {
+		/* ignore */
 	}
 
 	return c.json({
@@ -512,6 +577,8 @@ pipelineRouter.get("/:id/cycle/status", async (c) => {
 		current_prompt: latestStage?.prompt_summary ?? null,
 		current_result: latestStage?.result_summary ?? null,
 		stage_count: stages.length,
+		llm_mode: llmMode,
+		configured_providers: configuredProviders,
 		llm_models_used: llmModels,
 	});
 });

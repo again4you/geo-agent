@@ -626,7 +626,20 @@ async function loadPipelines() {
 					</div>
 				</div>
 				<div style="margin-top:6px;font-size:12px;color:var(--text-muted);">
-					${timeInfo} | Stages: ${status.stage_count || 0} | Retries: ${status.retry_count}${status.llm_models_used && status.llm_models_used.length > 0 ? ' | LLM: <code>' + esc(status.llm_models_used.join(', ')) + '</code>' : ''}
+					${timeInfo} | Stages: ${status.stage_count || 0} | Retries: ${status.retry_count} | ${(() => {
+						const mode = status.llm_mode || 'unknown';
+						const usedModels = status.llm_models_used && status.llm_models_used.length > 0 ? status.llm_models_used : [];
+						const configuredProviders = status.configured_providers && status.configured_providers.length > 0 ? status.configured_providers : [];
+						if (usedModels.length > 0) {
+							return 'LLM: <code>' + esc(usedModels.join(', ')) + '</code>';
+						} else if (configuredProviders.length > 0) {
+							return 'LLM: <code>' + esc(configuredProviders.join(', ')) + '</code>' + (status.is_terminal ? '' : ' <span style="color:var(--text-muted)">(설정됨)</span>');
+						} else if (mode === 'rule-based') {
+							return '<span style="color:var(--warning);">규칙 기반 (LLM 미설정)</span>';
+						} else {
+							return 'LLM: -';
+						}
+					})()}
 				</div>
 				${promptPreview ? '<div class="current-prompt-preview">' + promptPreview + '</div>' : ''}
 				${resultPreview && status.is_terminal ? '<div class="current-prompt-preview" style="color:var(--success);">' + resultPreview + '</div>' : ''}
@@ -666,6 +679,13 @@ function initSSE() {
 	if (sseSource) return;
 	try {
 		sseSource = new EventSource('/events');
+
+		sseSource.addEventListener('pipeline:started', function(e) {
+			var data = JSON.parse(e.data);
+			var modeLabel = data.llm_mode === 'llm' ? 'LLM: ' + (data.configured_providers || []).join(', ') : '규칙 기반 (LLM 미설정)';
+			toast('Pipeline 시작 — ' + modeLabel, 'success');
+			loadPipelines();
+		});
 
 		sseSource.addEventListener('pipeline:stage', function(e) {
 			var data = JSON.parse(e.data);
