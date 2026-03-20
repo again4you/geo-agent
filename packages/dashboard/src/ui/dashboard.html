@@ -720,8 +720,8 @@ function initSSE() {
 		sseSource.addEventListener('pipeline:failed', function(e) {
 			var data = JSON.parse(e.data);
 			var errorMsg = data.error || 'Unknown error';
-			var isAuthError = /401|403|unauthorized|forbidden|invalid.*key|access.*denied|authentication|invalid_api_key|incorrect.*api.*key|LLM.*인증|API.*인증/i.test(errorMsg);
-			if (isAuthError) {
+			var isLLMError = /401|403|unauthorized|forbidden|invalid.*key|access.*denied|authentication|invalid_api_key|incorrect.*api.*key|LLM.*인증|API.*인증|API.*Key.*설정|LLM.*초기화/i.test(errorMsg);
+			if (isLLMError) {
 				showLLMErrorModal(errorMsg);
 			} else {
 				toast('Pipeline failed: ' + errorMsg, 'error');

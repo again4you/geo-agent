@@ -748,8 +748,8 @@ describe("GET /api/targets/:id/cycle/status — stage info", () => {
 // ══════════════════════════════════════════════════════════════
 
 describe("LLM integration in pipeline execution", () => {
-	it("pipeline starts successfully without LLM API key (rule-based mode)", async () => {
-		// Default config has no API key set — should still start pipeline
+	it("pipeline refuses to start without LLM API key", async () => {
+		// Default config has no API key set — should refuse with error
 		const targetId = await getTargetId();
 		const res = await app.request(`/api/targets/${targetId}/pipeline?execute=true`, {
 			method: "POST",
@@ -758,16 +758,17 @@ describe("LLM integration in pipeline execution", () => {
 		expect(res.status).toBe(201);
 		const body = await res.json();
 		expect(body.pipeline_id).toBeDefined();
-		expect(body.stage).toBe("INIT");
+		expect(body.error).toBeTruthy();
+		expect(body.error).toMatch(/API.*Key/i);
 	});
 
-	it("pipeline creates DB record even when LLM is not configured", async () => {
+	it("pipeline creates DB record with error when LLM is not configured", async () => {
 		const targetId = await getTargetId();
 		await app.request(`/api/targets/${targetId}/pipeline?execute=true`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 		});
-		// Verify pipeline was created in DB
+		// Verify pipeline was created in DB (with FAILED status)
 		const listRes = await app.request(`/api/targets/${targetId}/pipeline`);
 		const pipelines = await listRes.json();
 		expect(pipelines.length).toBeGreaterThanOrEqual(1);

@@ -162,9 +162,18 @@ pipelineRouter.post("/:id/pipeline", async (c) => {
 						.join(", ")}`,
 				);
 			} else {
-				console.log(
-					"⚠️ No LLM API key configured — running pipeline in rule-based mode. " +
-						"Configure via Dashboard > LLM Providers tab.",
+				// API Key 미설정 → 파이프라인 실행 거부
+				const errMsg = "LLM API Key가 설정되지 않았습니다. Dashboard > LLM Providers 탭에서 API Key를 입력하세요.";
+				console.error(`❌ ${errMsg}`);
+				await repo.setError(pipeline.pipeline_id, errMsg);
+				broadcastSSE("pipeline:failed", {
+					target_id: targetId,
+					pipeline_id: pipeline.pipeline_id,
+					error: errMsg,
+				});
+				return c.json(
+					{ ...pipeline, error: errMsg },
+					201,
 				);
 			}
 		} catch (err) {
