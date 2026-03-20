@@ -974,6 +974,7 @@ function buildEvalSubTabs(data) {
 		{ id: 'evidence', icon: '🔬', label: '실증 데이터' },
 		{ id: 'roadmap', icon: '🗺️', label: '개선 로드맵' },
 		{ id: 'probes', icon: '🧪', label: 'Synthetic Probes' },
+		{ id: 'report', icon: '📋', label: 'Analysis Report' },
 		{ id: 'pipeline', icon: '⏱️', label: '실행 요약' },
 		{ id: 'llmlog', icon: '🔎', label: 'LLM Call Log' },
 	];
@@ -1072,6 +1073,9 @@ function renderEvalSubTab(tabId, data, container) {
 		break;
 	case 'probes':
 		html = renderProbesTab(data);
+		break;
+	case 'report':
+		html = renderAnalysisReportTab(data);
 		break;
 	case 'pipeline':
 		html = renderPipelineTab(data);
@@ -1575,6 +1579,129 @@ function renderProbesTab(data) {
 		html += '</div></details>';
 	}
 	html += '</div>';
+	return html;
+}
+
+// ── Tab: Analysis Report ─────────────────────────────
+function renderAnalysisReportTab(data) {
+	var report = data.analysis_report || {};
+	var html = '';
+
+	// Score + grade + site type
+	html += '<div class="card" style="padding:16px;margin-bottom:16px;">';
+	html += '<h3 style="font-size:16px;margin-bottom:12px;">Analysis Report Summary</h3>';
+	html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;">';
+	html += '<div style="background:var(--surface2);padding:12px;border-radius:6px;text-align:center;">';
+	html += '<div style="font-size:28px;font-weight:700;color:' + scoreColor(report.score || 0) + ';">' + (report.score || 0) + '</div>';
+	html += '<div style="font-size:11px;color:var(--text-muted);">Overall Score</div></div>';
+	html += '<div style="background:var(--surface2);padding:12px;border-radius:6px;text-align:center;">';
+	html += '<div style="font-size:16px;font-weight:600;">' + esc(report.grade || 'N/A') + '</div>';
+	html += '<div style="font-size:11px;color:var(--text-muted);">Grade</div></div>';
+	html += '<div style="background:var(--surface2);padding:12px;border-radius:6px;text-align:center;">';
+	html += '<div style="font-size:16px;font-weight:600;">' + esc(report.site_type || 'N/A') + '</div>';
+	html += '<div style="font-size:11px;color:var(--text-muted);">Site Type</div></div>';
+	html += '</div></div>';
+
+	// Dimensions
+	if (report.dimensions && report.dimensions.length > 0) {
+		html += '<div class="card" style="padding:16px;margin-bottom:16px;">';
+		html += '<h3 style="font-size:14px;margin-bottom:12px;">7-Dimension Scores</h3>';
+		for (var i = 0; i < report.dimensions.length; i++) {
+			var d = report.dimensions[i];
+			html += '<div style="margin-bottom:10px;">';
+			html += '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;">';
+			html += '<span>' + esc(d.id + ': ' + d.label) + ' <span style="color:var(--text-muted);">(w:' + (d.weight || 0) + ')</span></span>';
+			html += '<span style="font-weight:600;color:' + scoreColor(d.score) + ';">' + d.score + '</span></div>';
+			html += '<div style="height:6px;background:var(--surface2);border-radius:3px;overflow:hidden;">';
+			html += '<div style="height:100%;width:' + Math.min(d.score, 100) + '%;background:' + scoreColor(d.score) + ';border-radius:3px;"></div></div>';
+			if (d.details && d.details.length > 0) {
+				html += '<div style="font-size:11px;color:var(--text-muted);margin-top:2px;">' + d.details.map(esc).join(' · ') + '</div>';
+			}
+			html += '</div>';
+		}
+		html += '</div>';
+	}
+
+	// Multi-page summary
+	if (report.multi_page) {
+		var mp = report.multi_page;
+		html += '<div class="card" style="padding:16px;margin-bottom:16px;">';
+		html += '<h3 style="font-size:14px;margin-bottom:12px;">Multi-Page Analysis (' + (mp.page_count || mp.pages?.length || 0) + ' pages)</h3>';
+		if (mp.aggregate_score !== undefined) {
+			html += '<div style="font-size:13px;margin-bottom:8px;">Aggregate Score: <strong style="color:' + scoreColor(mp.aggregate_score) + ';">' + mp.aggregate_score + '</strong> (' + esc(mp.aggregate_grade || '') + ')</div>';
+		}
+		if (mp.pages) {
+			html += '<table class="eval-table" style="font-size:11px;"><thead><tr><th>Page</th><th>Score</th><th>Grade</th></tr></thead><tbody>';
+			for (var j = 0; j < mp.pages.length; j++) {
+				var p = mp.pages[j];
+				html += '<tr><td>' + esc(p.filename || p.url || '') + '</td>';
+				html += '<td style="color:' + scoreColor(p.score) + ';font-weight:600;">' + p.score + '</td>';
+				html += '<td>' + esc(p.grade || '') + '</td></tr>';
+			}
+			html += '</tbody></table>';
+		}
+		html += '</div>';
+	}
+
+	// Eval data highlights
+	var ed = report.eval_data || data.eval_data || {};
+	if (ed.strengths || ed.weaknesses || ed.opportunities) {
+		html += '<div class="card" style="padding:16px;margin-bottom:16px;">';
+		html += '<h3 style="font-size:14px;margin-bottom:12px;">Key Findings</h3>';
+		html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;">';
+		if (ed.strengths && ed.strengths.length > 0) {
+			html += '<div><h4 style="font-size:12px;color:var(--success);margin-bottom:8px;">Strengths (' + ed.strengths.length + ')</h4>';
+			ed.strengths.forEach(function(s) { html += findingCard('✅', s.title || s.category || '', s.description || s.detail || ''); });
+			html += '</div>';
+		}
+		if (ed.weaknesses && ed.weaknesses.length > 0) {
+			html += '<div><h4 style="font-size:12px;color:var(--danger);margin-bottom:8px;">Weaknesses (' + ed.weaknesses.length + ')</h4>';
+			ed.weaknesses.forEach(function(s) { html += findingCard('⚠️', s.title || s.category || '', s.description || s.detail || ''); });
+			html += '</div>';
+		}
+		if (ed.opportunities && ed.opportunities.length > 0) {
+			html += '<div><h4 style="font-size:12px;color:var(--primary);margin-bottom:8px;">Opportunities (' + ed.opportunities.length + ')</h4>';
+			ed.opportunities.forEach(function(s) { html += findingCard('🎯', s.title || s.category || '', s.description || s.detail || ''); });
+			html += '</div>';
+		}
+		html += '</div></div>';
+	}
+
+	// LLM Assessment
+	if (report.llm_assessment) {
+		html += '<div class="card" style="padding:16px;margin-bottom:16px;">';
+		html += '<h3 style="font-size:14px;margin-bottom:12px;">LLM Quality Assessment</h3>';
+		var la = report.llm_assessment;
+		if (la.brand_recognition) {
+			html += '<div style="margin-bottom:8px;font-size:12px;"><strong>Brand Recognition:</strong> ' + (la.brand_recognition.score || 0) + '/100';
+			if (la.brand_recognition.identified_brand) html += ' — ' + esc(la.brand_recognition.identified_brand);
+			html += '</div>';
+		}
+		if (la.content_quality) {
+			html += '<div style="margin-bottom:8px;font-size:12px;"><strong>Content Quality:</strong> ' + (la.content_quality.score || 0) + '/100 (clarity: ' + (la.content_quality.clarity || 0) + ', completeness: ' + (la.content_quality.completeness || 0) + ')</div>';
+		}
+		if (la.overall_assessment) {
+			html += '<div style="font-size:12px;color:var(--text-muted);padding:8px;background:var(--surface2);border-radius:6px;">' + esc(la.overall_assessment) + '</div>';
+		}
+	}
+
+	// Rich Report (if available)
+	if (data.rich_report) {
+		html += '<div class="card" style="padding:16px;margin-bottom:16px;">';
+		html += '<h3 style="font-size:14px;margin-bottom:12px;">LLM-Generated Rich Report (10-Tab)</h3>';
+		html += '<p style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">LLM agent loop이 생성한 상세 보고서입니다.</p>';
+		html += '<details><summary style="cursor:pointer;font-size:12px;color:var(--primary);">Raw JSON (click to expand)</summary>';
+		html += '<pre style="white-space:pre-wrap;font-size:11px;color:var(--text-muted);max-height:600px;overflow:auto;margin-top:8px;padding:12px;background:rgba(0,0,0,0.3);border-radius:6px;">' + esc(JSON.stringify(data.rich_report, null, 2)) + '</pre>';
+		html += '</details></div>';
+	}
+
+	// Full raw analysis data
+	html += '<div class="card" style="padding:16px;margin-bottom:16px;">';
+	html += '<h3 style="font-size:14px;margin-bottom:12px;">Raw Analysis Data</h3>';
+	html += '<details><summary style="cursor:pointer;font-size:12px;color:var(--primary);">Full ANALYZING stage result (click to expand)</summary>';
+	html += '<pre style="white-space:pre-wrap;font-size:11px;color:var(--text-muted);max-height:600px;overflow:auto;margin-top:8px;padding:12px;background:rgba(0,0,0,0.3);border-radius:6px;">' + esc(JSON.stringify(report, null, 2)) + '</pre>';
+	html += '</details></div>';
+
 	return html;
 }
 

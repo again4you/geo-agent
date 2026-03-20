@@ -468,6 +468,8 @@ pipelineRouter.get("/:id/pipeline/:pipelineId/evaluation", async (c) => {
 		multi_page: initial.multi_page ?? null,
 		eval_data: initial.eval_data ?? null,
 		synthetic_probes: initial.synthetic_probes ?? null,
+		rich_report: initial.rich_report ?? null,
+		analysis_report: initial,
 		validation: final_data,
 		llm_models_used: llmModelsUsed,
 		llm_errors: llmErrors,
@@ -486,21 +488,40 @@ pipelineRouter.get("/:id/pipeline/:pipelineId/llm-log", async (c) => {
 	const pipelineId = c.req.param("pipelineId");
 
 	const stages = await stageRepo.findByPipelineId(pipelineId);
+
+	// Try REPORTING stage first (has the complete log)
 	const reportingStage = stages.find((s) => s.stage === "REPORTING" && s.result_full);
-	if (!reportingStage?.result_full) {
-		return c.json({ llm_call_log: [], message: "No LLM call log available (pipeline not completed or no LLM used)" });
+	if (reportingStage?.result_full) {
+		try {
+			const reportData = JSON.parse(reportingStage.result_full);
+			return c.json({
+				llm_call_log: reportData.llm_call_log ?? [],
+				llm_models_used: reportData.llm_models_used ?? [],
+				total_calls: (reportData.llm_call_log ?? []).length,
+			});
+		} catch { /* fall through */ }
 	}
 
-	try {
-		const reportData = JSON.parse(reportingStage.result_full);
-		return c.json({
-			llm_call_log: reportData.llm_call_log ?? [],
-			llm_models_used: reportData.llm_models_used ?? [],
-			total_calls: (reportData.llm_call_log ?? []).length,
-		});
-	} catch {
-		return c.json({ llm_call_log: [], message: "Failed to parse report data" });
+	// Fallback: scan all stages for llm_call_log entries
+	const allLogs: unknown[] = [];
+	const modelSet = new Set<string>();
+	for (const s of stages) {
+		if (!s.result_full) continue;
+		try {
+			const rf = JSON.parse(s.result_full);
+			if (Array.isArray(rf.llm_call_log)) {
+				allLogs.push(...rf.llm_call_log);
+				for (const entry of rf.llm_call_log) {
+					if (entry.provider && entry.model) modelSet.add(`${entry.provider}/${entry.model}`);
+				}
+			}
+		} catch { /* ignore */ }
 	}
+	return c.json({
+		llm_call_log: allLogs,
+		llm_models_used: Array.from(modelSet),
+		total_calls: allLogs.length,
+	});
 });
 
 // ── Cycle Control Routes ──────────────────────────────────
