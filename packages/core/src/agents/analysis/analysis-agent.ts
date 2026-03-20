@@ -385,7 +385,7 @@ export async function runAnalysis(
 			const { result } = await safeLLMCall(
 				deps.chatLLM,
 				{
-					prompt: `Evaluate this web page for LLM consumption quality. Analyze brand recognition, content quality, information gaps, and issues that affect how well LLMs can understand and cite this page.\n\nPage context:\n${JSON.stringify(pageContext, null, 2)}`,
+					prompt: `Evaluate this web page for LLM consumption quality. Analyze brand recognition, content quality, information gaps, and issues that affect how well LLMs can understand and cite this page. Respond in JSON format.\n\nPage context:\n${JSON.stringify(pageContext, null, 2)}`,
 					system_instruction: `You are a GEO (Generative Engine Optimization) expert. Evaluate web pages for LLM consumption quality. Respond with JSON only:\n{\n  "brand_recognition": { "score": 0-100, "identified_brand": "string", "identified_products": ["string"], "reasoning": "string" },\n  "content_quality": { "score": 0-100, "clarity": 0-100, "completeness": 0-100, "factual_density": 0-100, "reasoning": "string" },\n  "information_gaps": [{ "category": "string", "description": "string", "importance": "critical|high|medium|low" }],\n  "llm_consumption_issues": [{ "issue": "string", "recommendation": "string" }],\n  "overall_assessment": "string"\n}`,
 					json_mode: true,
 					temperature: 0.3,

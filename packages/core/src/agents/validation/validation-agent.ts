@@ -182,7 +182,7 @@ export async function runValidation(
 			const { result } = await safeLLMCall(
 				deps.chatLLM,
 				{
-					prompt: `Compare the optimization results. Score changed from ${input.before_score} to ${effectiveAfterScore} (delta: ${delta}).\n\nDimension changes:\n${dimensionDeltas.map((d) => `${d.label}: ${d.before} → ${d.after} (${d.delta >= 0 ? "+" : ""}${d.delta})`).join("\n")}\n\nAssess the optimization quality.`,
+					prompt: `Compare the optimization results. Score changed from ${input.before_score} to ${effectiveAfterScore} (delta: ${delta}).\n\nDimension changes:\n${dimensionDeltas.map((d) => `${d.label}: ${d.before} → ${d.after} (${d.delta >= 0 ? "+" : ""}${d.delta})`).join("\n")}\n\nAssess the optimization quality. Respond in JSON format.`,
 					system_instruction:
 						'You are a GEO validation expert. Assess optimization quality. Respond with JSON:\n{"improved_aspects":["string"],"remaining_issues":["string"],"llm_friendliness_verdict":"much_better|better|marginally_better|no_change|worse","specific_recommendations":["string"],"confidence":0.0-1.0}',
 					json_mode: true,
