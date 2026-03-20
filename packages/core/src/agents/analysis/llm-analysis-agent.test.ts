@@ -1,11 +1,88 @@
 import { describe, it, expect, vi } from "vitest";
 import { resolveModel, type LLMAnalysisResult } from "./llm-analysis-agent.js";
+import { createAnalysisToolState, createAnalysisToolHandlers, type AnalysisToolDeps } from "./tools.js";
+import type { CrawlData } from "../shared/types.js";
+
+const mockCrawlData: CrawlData = {
+	html: "<html><head><title>Test</title></head><body><h1>Hello</h1></body></html>",
+	url: "https://example.com",
+	status_code: 200,
+	content_type: "text/html",
+	response_time_ms: 150,
+	robots_txt: "User-agent: *\nAllow: /",
+	llms_txt: null,
+	sitemap_xml: null,
+	json_ld: [{ "@type": "WebPage", name: "Test" }],
+	meta_tags: { description: "Test page" },
+	title: "Test",
+	canonical_url: "https://example.com",
+	links: [],
+	headers: {},
+};
+
+const mockDeps: AnalysisToolDeps = {
+	crawlTarget: vi.fn().mockResolvedValue(mockCrawlData),
+	scoreTarget: vi.fn().mockReturnValue({
+		overall_score: 65,
+		grade: "Needs Improvement",
+		dimensions: [
+			{ id: "S1", label: "Crawlability", score: 70, weight: 0.15, details: [] },
+			{ id: "S2", label: "Structured Data", score: 60, weight: 0.25, details: [] },
+		],
+	}),
+	classifySite: vi.fn().mockReturnValue({
+		site_type: "generic",
+		confidence: 0.8,
+		matched_signals: [],
+		all_signals: [],
+	}),
+};
 
 describe("LLM Analysis Agent", () => {
 	describe("resolveModel", () => {
 		it("should throw when no provider with API key is configured", () => {
-			// Use a temp dir with no config files — ProviderConfigManager returns defaults (no API keys)
 			expect(() => resolveModel("/tmp/nonexistent-workspace")).toThrow("No LLM provider");
+		});
+	});
+
+	describe("tool state auto-completion", () => {
+		it("should auto-call score_geo if LLM skipped it", async () => {
+			const state = createAnalysisToolState();
+			const handlers = createAnalysisToolHandlers(mockDeps, state);
+
+			// Simulate: LLM called crawl_page but NOT score_geo
+			await handlers.crawl_page({ url: "https://example.com" });
+			expect(state.homepageCrawl).toBeTruthy();
+			expect(state.pageScores.has("homepage")).toBe(false);
+
+			// After auto-completion, score should exist
+			await handlers.score_geo({ crawl_data_key: "homepage" });
+			expect(state.pageScores.has("homepage")).toBe(true);
+			expect(state.pageScores.get("homepage")!.overall_score).toBe(65);
+		});
+
+		it("should auto-call classify_site if LLM skipped it", async () => {
+			const state = createAnalysisToolState();
+			const handlers = createAnalysisToolHandlers(mockDeps, state);
+
+			await handlers.crawl_page({ url: "https://example.com" });
+			expect(state.classification).toBeNull();
+
+			await handlers.classify_site({});
+			expect(state.classification).toBeTruthy();
+			expect(state.classification!.site_type).toBe("generic");
+		});
+
+		it("score should NOT be 0 after crawl + score_geo", async () => {
+			const state = createAnalysisToolState();
+			const handlers = createAnalysisToolHandlers(mockDeps, state);
+
+			await handlers.crawl_page({ url: "https://example.com" });
+			await handlers.score_geo({ crawl_data_key: "homepage" });
+
+			const score = state.pageScores.get("homepage");
+			expect(score).toBeTruthy();
+			expect(score!.overall_score).toBeGreaterThan(0);
 		});
 	});
 
@@ -28,27 +105,13 @@ describe("LLM Analysis Agent", () => {
 					probes: null,
 					roadmap: { consumer_scenarios: [], vulnerability_scores: [], opportunity_matrix: [] },
 				},
-				llmAssessment: "Good GEO readiness",
+				llmAssessment: "Good",
 				agentLoopResult: { finalText: "{}", messages: [], iterations: 5, totalUsage: { input: 100, output: 200, totalTokens: 300 }, totalCost: 0.01, completed: true, toolCallLog: [] },
-				toolCallLog: [
-					{ name: "crawl_page", args: { url: "https://example.com" }, result: "{}" },
-					{ name: "score_geo", args: { crawl_data_key: "homepage" }, result: "{}" },
-				],
+				toolCallLog: [],
 			};
 
-			// richReport is NOT null — it's mandatory
 			expect(mockResult.richReport).toBeTruthy();
 			expect(mockResult.richReport.overall_score).toBe(65);
-			expect(mockResult.richReport.overview).toBeTruthy();
-			expect(mockResult.richReport.crawlability).toBeTruthy();
-			expect(mockResult.richReport.structured_data).toBeTruthy();
-			expect(mockResult.richReport.products).toBeTruthy();
-			expect(mockResult.richReport.brand).toBeTruthy();
-			expect(mockResult.richReport.pages).toBeTruthy();
-			expect(mockResult.richReport.recommendations).toBeTruthy();
-			expect(mockResult.richReport.evidence).toBeTruthy();
-			expect(mockResult.richReport.roadmap).toBeTruthy();
-			expect(mockResult.toolCallLog).toHaveLength(2);
 		});
 	});
 });

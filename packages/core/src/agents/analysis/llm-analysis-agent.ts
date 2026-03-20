@@ -94,6 +94,20 @@ export async function runLLMAnalysis(
 		maxTokens: 8192,
 	});
 
+	// Ensure critical tools were called — if LLM skipped them, call them now
+	if (!state.homepageCrawl) {
+		await toolHandlers.crawl_page({ url: input.target_url, timeout_ms: input.crawl_timeout ?? 15000 });
+	}
+	if (!state.classification) {
+		await toolHandlers.classify_site({});
+	}
+	if (!state.pageScores.has("homepage")) {
+		await toolHandlers.score_geo({ crawl_data_key: "homepage" });
+	}
+	if (!state.evalData) {
+		await toolHandlers.extract_evaluation_data({});
+	}
+
 	if (!agentResult.finalText) {
 		throw new Error("LLM agent loop produced no output");
 	}
