@@ -1518,6 +1518,13 @@ EffectivenessIndex   SemanticChangeRecord
 
 ---
 
+## 4-D. 사용성 원칙
+
+- LLM Provider가 동작하지 않아서 LLM을 통한 Query가 동작하지 않을 떄에는 사용자에게 Clear하게 문제 원인을 알리고 동작을 정지한다.
+   - LLM 으로 해야 할일을 Hardcoded code로 하지 않아야 한다.
+
+---
+
 ## 5. GEO 최적화 원칙
 
 ### 5.1 LLM 인용 최적화 원칙 (CRAFT 프레임워크)
