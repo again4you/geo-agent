@@ -760,6 +760,15 @@ INIT → ANALYZING → CLONING → STRATEGIZING → OPTIMIZING → VALIDATING �
 - packages/core/src/llm/geo-llm-client.integration.test.ts — 3 tests (실제 API key 자동 사용)
 - packages/core/src/agents/shared/json-mode-safety.test.ts — 1 test (전체 json_mode 검증)
 
+#### Dashboard: Evaluation Analysis Report 서브탭 + LLM Call Log 개선 ✅
+- Evaluation API: analysis_report (전체 ANALYZING result), rich_report 필드 추가
+- Dashboard 'Analysis Report' 서브탭 신설:
+  Score/Grade/Site Type 요약, 7차원 점수 바, Multi-page 테이블,
+  Strengths/Weaknesses/Opportunities, LLM Assessment, Rich Report JSON,
+  Raw analysis data (expandable)
+- LLM Log: REPORTING 없어도 전체 stage 스캔하여 로그 표시
+- 각 LLM 호출의 Prompt (500자) + Response (1000자) 클릭 펼침 조회
+
 #### 테스트 (vitest) — 1407 tests, 43 files ✅
 
 ---
