@@ -8,6 +8,7 @@ import {
 	ensureTables,
 	initWorkspace,
 	loadSettings,
+	seedDefaultTargets,
 } from "@geo-agent/core";
 import { type ServerType, serve } from "@hono/node-server";
 import { Hono } from "hono";
@@ -192,6 +193,7 @@ export async function startServer(
 	// Initialize database and inject into routers
 	const db = createDatabase(settings);
 	await ensureTables(db);
+	await seedDefaultTargets(db);
 	initTargetsRouter(db);
 	initPipelineRouter(db, settings);
 
