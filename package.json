@@ -16,6 +16,7 @@
 		"test": "vitest run",
 		"test:e2e": "vitest run --config tests/e2e/vitest.config.e2e.ts",
 		"test:llm": "vitest run --config tests/llm-integration/vitest.config.llm.ts",
+		"test:clone": "vitest run --config tests/clone-integration/vitest.config.clone.ts",
 		"test:all": "npm test && npm run test:e2e",
 		"ci": "npm install && npm run build && npm test",
 		"clean": "npm run clean --workspaces",
